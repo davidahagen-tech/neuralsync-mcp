@@ -5,9 +5,13 @@ import { serve } from "@std/http/server.ts";
 import { MCPServer } from './mcp-protocol.ts';
 
 const mcpServer = new MCPServer();
-const port = parseInt(Deno.env.get('PORT') || '8000');
+// Debug PORT environment variable
+const PORT_ENV = Deno.env.get('PORT');
+const port = PORT_ENV ? parseInt(PORT_ENV) : 8000;
 
 console.log('🧠 NeuralSynch MCP Server starting...');
+console.log(`🔍 PORT environment variable: "${PORT_ENV}"`);
+console.log(`🔍 Parsed port value: ${port}`);
 console.log(`📍 Server will run on port ${port}`);
 console.log('🔗 MCP Protocol: 2024-11-05');
 console.log('💾 Memory Backend: NeuralSynch Supabase');
