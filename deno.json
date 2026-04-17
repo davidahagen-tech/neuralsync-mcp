@@ -1,0 +1,23 @@
+{
+  "imports": {
+    "@std/http/server.ts": "https://deno.land/std@0.210.0/http/server.ts",
+    "@std/json": "https://deno.land/std@0.210.0/json/mod.ts"
+  },
+  "tasks": {
+    "start": "deno run --allow-net --allow-env main.ts",
+    "dev": "deno run --allow-net --allow-env --watch main.ts"
+  },
+  "compilerOptions": {
+    "lib": ["dom", "deno.ns"]
+  },
+  "deploy": {
+    "project": "neuralsync-mcp",
+    "entrypoint": "main.ts",
+    "include": [
+      "main.ts",
+      "mcp-protocol.ts", 
+      "memory-tools.ts",
+      "supabase-client.ts"
+    ]
+  }
+}
