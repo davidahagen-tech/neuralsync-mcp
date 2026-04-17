@@ -59,7 +59,7 @@ export class NeuralSynchClient {
   async writeSessionBack(writeback: SessionWriteback): Promise<{success: boolean; message: string}> {
     try {
       const response = await fetch(
-        `${this.baseUrl}/functions/v1/write-session-back`,
+        `${this.baseUrl}/functions/v1/write-session-back-`,
         {
           method: 'POST',
           headers: {
