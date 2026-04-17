@@ -1,7 +1,9 @@
+import { MCPServer } from './mcp-protocol.ts';
+
+const server = new MCPServer();
+
 export default {
-  fetch(): Response {
-    return new Response("🧠 NeuralSynch MCP Server is LIVE!", {
-      headers: { "Content-Type": "text/plain" }
-    });
+  async fetch(request: Request): Promise<Response> {
+    return await server.handleHTTP(request);
   }
 };
