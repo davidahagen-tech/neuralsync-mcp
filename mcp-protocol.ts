@@ -1,5 +1,6 @@
 // MCP (Model Context Protocol) implementation for NeuralSynch
 // Handles JSON-RPC 2.0 protocol for tool discovery and execution
+// Supports Streamable HTTP transport for Claude Desktop/Web connectors
 
 import { MemoryToolHandler, MEMORY_TOOLS_SCHEMA } from './memory-tools.ts';
 
@@ -23,6 +24,7 @@ export interface MCPResponse {
 
 export class MCPServer {
   private toolHandler: MemoryToolHandler;
+  private sessionId: string;
   private serverInfo = {
     name: 'neuralsync-memory',
     version: '1.0.0',
@@ -38,14 +40,19 @@ export class MCPServer {
 
   constructor() {
     this.toolHandler = new MemoryToolHandler();
+    this.sessionId = crypto.randomUUID();
   }
 
-  async handleRequest(request: MCPRequest): Promise<MCPResponse> {
+  async handleRequest(request: MCPRequest): Promise<MCPResponse | null> {
     try {
       switch (request.method) {
         case 'initialize':
           return this.handleInitialize(request);
         
+        case 'notifications/initialized':
+          // Notification — no response required
+          return null;
+
         case 'tools/list':
           return this.handleToolsList(request);
         
@@ -78,8 +85,13 @@ export class MCPServer {
       id: request.id,
       result: {
         protocolVersion: '2024-11-05',
-        capabilities: this.serverInfo.capabilities,
-        serverInfo: this.serverInfo
+        capabilities: {
+          tools: { listChanged: false },
+        },
+        serverInfo: {
+          name: this.serverInfo.name,
+          version: this.serverInfo.version,
+        }
       }
     };
   }
@@ -152,24 +164,50 @@ export class MCPServer {
     };
   }
 
-  // HTTP handler for web requests
+  // HTTP handler for web requests — supports both plain JSON and Streamable HTTP (SSE)
   async handleHTTP(request: Request): Promise<Response> {
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      'Content-Type': 'application/json'
+      'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, Mcp-Session-Id',
+      'Access-Control-Expose-Headers': 'Mcp-Session-Id',
     };
 
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
       return new Response(null, { 
-        status: 200, 
+        status: 204, 
         headers: corsHeaders 
       });
     }
 
-    // Handle GET requests - return server info
+    const url = new URL(request.url);
+
+    // Handle GET /health BEFORE generic GET
+    if (request.method === 'GET' && url.pathname === '/health') {
+      try {
+        const stats = await this.toolHandler.handleToolCall({
+          name: 'memory_stats',
+          arguments: { client_id: 'viralbrain' }
+        });
+        return new Response(
+          JSON.stringify({
+            status: 'healthy',
+            server: this.serverInfo.name,
+            timestamp: new Date().toISOString(),
+            vault: JSON.parse(stats.content[0].text)
+          }, null, 2),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      } catch (error) {
+        return new Response(
+          JSON.stringify({ status: 'degraded', error: error.message }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+    }
+
+    // Handle GET / — server info
     if (request.method === 'GET') {
       return new Response(
         JSON.stringify({
@@ -177,47 +215,75 @@ export class MCPServer {
           tools: MEMORY_TOOLS_SCHEMA,
           status: 'ready',
           protocol: 'MCP 2024-11-05',
+          transport: 'streamable-http',
           endpoints: {
             'GET /': 'Server information',
-            'POST /': 'MCP JSON-RPC requests',
-            'GET /health': 'Health check'
+            'POST /': 'MCP JSON-RPC requests (JSON or SSE)',
+            'GET /health': 'Health check with vault stats'
           }
         }, null, 2),
-        {
-          status: 200,
-          headers: corsHeaders
-        }
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Handle health checks
-    if (request.method === 'GET' && new URL(request.url).pathname === '/health') {
-      return new Response(
-        JSON.stringify({
-          status: 'healthy',
-          server: this.serverInfo.name,
-          timestamp: new Date().toISOString()
-        }),
-        {
-          status: 200,
-          headers: corsHeaders
-        }
-      );
+    // Handle DELETE — session termination
+    if (request.method === 'DELETE') {
+      return new Response(null, {
+        status: 200,
+        headers: { ...corsHeaders, 'Mcp-Session-Id': this.sessionId }
+      });
     }
 
-    // Handle MCP JSON-RPC requests
+    // Handle POST — MCP JSON-RPC requests
     if (request.method === 'POST') {
       try {
-        const mcpRequest: MCPRequest = await request.json();
-        const mcpResponse = await this.handleRequest(mcpRequest);
-        
+        const body = await request.json();
+        const acceptHeader = request.headers.get('Accept') || '';
+        const wantsSSE = acceptHeader.includes('text/event-stream');
+
+        // Handle batch requests (array of JSON-RPC messages)
+        const requests: MCPRequest[] = Array.isArray(body) ? body : [body];
+        const responses: MCPResponse[] = [];
+
+        for (const req of requests) {
+          const response = await this.handleRequest(req);
+          if (response !== null) {
+            responses.push(response);
+          }
+        }
+
+        // If client wants SSE (Streamable HTTP transport)
+        if (wantsSSE) {
+          const sseBody = responses
+            .map(r => `event: message\ndata: ${JSON.stringify(r)}\n\n`)
+            .join('');
+
+          return new Response(sseBody, {
+            status: 200,
+            headers: {
+              ...corsHeaders,
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache, no-transform',
+              'Connection': 'keep-alive',
+              'Mcp-Session-Id': this.sessionId,
+            }
+          });
+        }
+
+        // Plain JSON response (backward compatible with curl testing)
+        const result = responses.length === 1 ? responses[0] : responses;
         return new Response(
-          JSON.stringify(mcpResponse),
+          JSON.stringify(result),
           {
             status: 200,
-            headers: corsHeaders
+            headers: {
+              ...corsHeaders,
+              'Content-Type': 'application/json',
+              'Mcp-Session-Id': this.sessionId,
+            }
           }
         );
+
       } catch (error) {
         const errorResponse = this.createErrorResponse(
           null,
@@ -227,20 +293,14 @@ export class MCPServer {
         
         return new Response(
           JSON.stringify(errorResponse),
-          {
-            status: 400,
-            headers: corsHeaders
-          }
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
     }
 
     return new Response(
       JSON.stringify({ error: 'Method not allowed' }),
-      {
-        status: 405,
-        headers: corsHeaders
-      }
+      { status: 405, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
 }
