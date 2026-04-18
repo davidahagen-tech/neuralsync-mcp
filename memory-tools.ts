@@ -1,13 +1,13 @@
 // Memory Packet tool handlers for MCP protocol
 // Maps MCP tool calls to NeuralSynch Memory Packet operations
- 
+
 import { NeuralSynchClient, type MemoryContext, type SessionWriteback } from './supabase-client.ts';
- 
+
 export interface MCPToolCall {
   name: string;
   arguments: Record<string, any>;
 }
- 
+
 export interface MCPToolResult {
   content: Array<{
     type: 'text';
@@ -15,38 +15,37 @@ export interface MCPToolResult {
   }>;
   isError?: boolean;
 }
- 
+
 export class MemoryToolHandler {
   private client: NeuralSynchClient;
- 
+
   constructor() {
     this.client = new NeuralSynchClient();
   }
- 
+
   async handleToolCall(tool: MCPToolCall): Promise<MCPToolResult> {
     try {
       switch (tool.name) {
         case 'memory_read':
           return await this.handleMemoryRead(tool.arguments);
- 
+
         case 'memory_write':
           return await this.handleMemoryWrite(tool.arguments);
- 
+
         case 'memory_search':
           return await this.handleMemorySearch(tool.arguments);
- 
+
         case 'memory_stats':
           return await this.handleMemoryStats(tool.arguments);
- 
+
         // ChatGPT Deep Research / Company Knowledge compatibility wrappers.
         // `search` mirrors memory_search. `fetch` mirrors memory_read.
-        // Argument shapes are normalized to match OpenAI's expectations.
         case 'search':
           return await this.handleSearchWrapper(tool.arguments);
- 
+
         case 'fetch':
           return await this.handleFetchWrapper(tool.arguments);
- 
+
         default:
           throw new Error(`Unknown tool: ${tool.name}`);
       }
@@ -61,11 +60,11 @@ export class MemoryToolHandler {
       };
     }
   }
- 
+
   private async handleMemoryRead(args: any): Promise<MCPToolResult> {
     const clientId = args.client_id || 'viralbrain';
     const context = await this.client.readMemoryPacket(clientId);
- 
+
     return {
       content: [{
         type: 'text',
@@ -82,7 +81,7 @@ export class MemoryToolHandler {
       }]
     };
   }
- 
+
   private async handleMemoryWrite(args: any): Promise<MCPToolResult> {
     const writeback: SessionWriteback = {
       session_number: args.session_number || Date.now(),
@@ -95,9 +94,9 @@ export class MemoryToolHandler {
       next_session_tasks: args.next_session_tasks || [],
       handoff_prompt: args.handoff_prompt
     };
- 
+
     const result = await this.client.writeSessionBack(writeback);
- 
+
     return {
       content: [{
         type: 'text',
@@ -115,18 +114,18 @@ export class MemoryToolHandler {
       }]
     };
   }
- 
+
   private async handleMemorySearch(args: any): Promise<MCPToolResult> {
     const query = args.query;
     const clientId = args.client_id || 'viralbrain';
     const limit = args.limit || 10;
- 
+
     if (!query) {
       throw new Error('Query parameter is required for memory search');
     }
- 
+
     const results = await this.client.searchMemory(query, clientId, limit);
- 
+
     return {
       content: [{
         type: 'text',
@@ -145,11 +144,11 @@ export class MemoryToolHandler {
       }]
     };
   }
- 
+
   private async handleMemoryStats(args: any): Promise<MCPToolResult> {
     const clientId = args.client_id || 'viralbrain';
     const stats = await this.client.getMemoryStats(clientId);
- 
+
     return {
       content: [{
         type: 'text',
@@ -168,36 +167,21 @@ export class MemoryToolHandler {
       }]
     };
   }
- 
+
   // -----------------------------------------------------------------------------
   // ChatGPT Deep Research / Company Knowledge compatibility wrappers
   // -----------------------------------------------------------------------------
-  //
-  // ChatGPT's Deep Research and Company Knowledge features expect MCP servers
-  // to expose two canonically-named tools: `search` and `fetch`. Rather than
-  // requiring operators to know the NeuralSynch-specific names, these wrappers
-  // delegate to the existing memory_search and memory_read handlers.
-  //
-  // `search` accepts a { query } argument and returns a list of hits in the
-  // OpenAI-expected shape: { id, title, text, url? }.
-  //
-  // `fetch` accepts a { id } argument. Since NeuralSynch's primary retrieval
-  // unit is the memory packet (via client_id), this wrapper treats the `id`
-  // argument as the client_id. For a single-client deployment (viralbrain),
-  // any id value maps to the same packet — which is the correct behavior.
- 
+
   private async handleSearchWrapper(args: any): Promise<MCPToolResult> {
     const query = args.query;
     if (!query) {
       throw new Error('Query parameter is required for search');
     }
- 
+
     const clientId = args.client_id || 'viralbrain';
     const limit = args.limit || 10;
     const results = await this.client.searchMemory(query, clientId, limit);
- 
-    // Return in OpenAI-expected shape: array of { id, title, text, url }.
-    // Wrapped in a single text block for MCP transport compatibility.
+
     return {
       content: [{
         type: 'text',
@@ -214,14 +198,11 @@ export class MemoryToolHandler {
       }]
     };
   }
- 
+
   private async handleFetchWrapper(args: any): Promise<MCPToolResult> {
-    // The `id` argument is treated as a client_id for packet retrieval.
-    // This aligns with NeuralSynch's packet-based retrieval model and keeps
-    // the wrapper implementation trivial — no new client methods required.
     const clientId = args.id || args.client_id || 'viralbrain';
     const context = await this.client.readMemoryPacket(clientId);
- 
+
     return {
       content: [{
         type: 'text',
@@ -241,11 +222,16 @@ export class MemoryToolHandler {
     };
   }
 }
- 
+
 // Tool schema definitions for MCP discovery.
 // readOnlyHint on each tool prevents unnecessary confirmation modals in ChatGPT.
 // memory_write is the only tool that mutates state, so it is the only one
 // with readOnlyHint: false.
+//
+// NOTE: Required fields are declared ONLY via the `required: [...]` array at
+// the parent object level (per JSON Schema draft 7+). Do NOT put `required: true`
+// on individual property definitions — ChatGPT's strict schema validator
+// rejects it as invalid JSON Schema.
 export const MEMORY_TOOLS_SCHEMA = [
   {
     name: 'memory_read',
@@ -284,18 +270,15 @@ export const MEMORY_TOOLS_SCHEMA = [
         },
         session_number: {
           type: 'number',
-          description: 'Session number for this writeback',
-          required: true
+          description: 'Session number for this writeback'
         },
         objective: {
           type: 'string',
-          description: 'Primary objective/goal for this session',
-          required: true
+          description: 'Primary objective/goal for this session'
         },
         outcome_summary: {
           type: 'string',
-          description: 'Summary of what was accomplished this session',
-          required: true
+          description: 'Summary of what was accomplished this session'
         }
       },
       required: ['session_number', 'objective', 'outcome_summary']
@@ -317,8 +300,7 @@ export const MEMORY_TOOLS_SCHEMA = [
         },
         query: {
           type: 'string',
-          description: 'Search query to find relevant memories',
-          required: true
+          description: 'Search query to find relevant memories'
         },
         limit: {
           type: 'number',
