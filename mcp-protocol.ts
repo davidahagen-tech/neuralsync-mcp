@@ -1,16 +1,16 @@
 // MCP (Model Context Protocol) implementation for NeuralSynch
 // Handles JSON-RPC 2.0 protocol for tool discovery and execution
-// Supports Streamable HTTP transport for Claude Desktop/Web connectors
-
+// Supports Streamable HTTP transport for Claude Desktop/Web/ChatGPT connectors
+ 
 import { MemoryToolHandler, MEMORY_TOOLS_SCHEMA } from './memory-tools.ts';
-
+ 
 export interface MCPRequest {
   jsonrpc: string;
   id?: string | number;
   method: string;
   params?: any;
 }
-
+ 
 export interface MCPResponse {
   jsonrpc: string;
   id?: string | number;
@@ -21,13 +21,13 @@ export interface MCPResponse {
     data?: any;
   };
 }
-
+ 
 export class MCPServer {
   private toolHandler: MemoryToolHandler;
   private sessionId: string;
   private serverInfo = {
     name: 'neuralsync-memory',
-    version: '1.0.0',
+    version: '1.1.0',
     description: 'NeuralSynch Memory Packet system for Claude anti-amnesia',
     author: 'Ascension 1 Capital LLC',
     capabilities: {
@@ -37,31 +37,31 @@ export class MCPServer {
       logging: true
     }
   };
-
+ 
   constructor() {
     this.toolHandler = new MemoryToolHandler();
     this.sessionId = crypto.randomUUID();
   }
-
+ 
   async handleRequest(request: MCPRequest): Promise<MCPResponse | null> {
     try {
       switch (request.method) {
         case 'initialize':
           return this.handleInitialize(request);
-        
+ 
         case 'notifications/initialized':
           // Notification — no response required
           return null;
-
+ 
         case 'tools/list':
           return this.handleToolsList(request);
-        
+ 
         case 'tools/call':
           return this.handleToolCall(request);
-        
+ 
         case 'ping':
           return this.handlePing(request);
-        
+ 
         default:
           return this.createErrorResponse(
             request.id,
@@ -78,7 +78,7 @@ export class MCPServer {
       );
     }
   }
-
+ 
   private handleInitialize(request: MCPRequest): MCPResponse {
     return {
       jsonrpc: '2.0',
@@ -95,7 +95,7 @@ export class MCPServer {
       }
     };
   }
-
+ 
   private handleToolsList(request: MCPRequest): MCPResponse {
     return {
       jsonrpc: '2.0',
@@ -105,10 +105,10 @@ export class MCPServer {
       }
     };
   }
-
+ 
   private async handleToolCall(request: MCPRequest): Promise<MCPResponse> {
     const { name, arguments: args } = request.params || {};
-    
+ 
     if (!name) {
       return this.createErrorResponse(
         request.id,
@@ -116,13 +116,13 @@ export class MCPServer {
         'Tool name is required'
       );
     }
-
+ 
     try {
       const result = await this.toolHandler.handleToolCall({
         name,
         arguments: args || {}
       });
-
+ 
       return {
         jsonrpc: '2.0',
         id: request.id,
@@ -139,7 +139,7 @@ export class MCPServer {
       );
     }
   }
-
+ 
   private handlePing(request: MCPRequest): MCPResponse {
     return {
       jsonrpc: '2.0',
@@ -152,7 +152,7 @@ export class MCPServer {
       }
     };
   }
-
+ 
   private createErrorResponse(id: any, code: number, message: string): MCPResponse {
     return {
       jsonrpc: '2.0',
@@ -163,8 +163,10 @@ export class MCPServer {
       }
     };
   }
-
+ 
   // HTTP handler for web requests — supports both plain JSON and Streamable HTTP (SSE)
+  // Routes: POST /  and  POST /mcp  both dispatch to MCP JSON-RPC.
+  // The /mcp alias exists for OpenAI ChatGPT connector conventions.
   async handleHTTP(request: Request): Promise<Response> {
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
@@ -172,17 +174,18 @@ export class MCPServer {
       'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, Mcp-Session-Id',
       'Access-Control-Expose-Headers': 'Mcp-Session-Id',
     };
-
+ 
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
-      return new Response(null, { 
-        status: 204, 
-        headers: corsHeaders 
+      return new Response(null, {
+        status: 204,
+        headers: corsHeaders
       });
     }
-
+ 
     const url = new URL(request.url);
-
+    const isMcpPath = url.pathname === '/' || url.pathname === '/mcp';
+ 
     // Handle GET /health BEFORE generic GET
     if (request.method === 'GET' && url.pathname === '/health') {
       try {
@@ -206,9 +209,9 @@ export class MCPServer {
         );
       }
     }
-
-    // Handle GET / — server info
-    if (request.method === 'GET') {
+ 
+    // Handle GET / and GET /mcp — server info
+    if (request.method === 'GET' && isMcpPath) {
       return new Response(
         JSON.stringify({
           server: this.serverInfo,
@@ -218,46 +221,48 @@ export class MCPServer {
           transport: 'streamable-http',
           endpoints: {
             'GET /': 'Server information',
+            'GET /mcp': 'Server information (alias)',
             'POST /': 'MCP JSON-RPC requests (JSON or SSE)',
+            'POST /mcp': 'MCP JSON-RPC requests (alias for OpenAI connector convention)',
             'GET /health': 'Health check with vault stats'
           }
         }, null, 2),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
-
+ 
     // Handle DELETE — session termination
-    if (request.method === 'DELETE') {
+    if (request.method === 'DELETE' && isMcpPath) {
       return new Response(null, {
         status: 200,
         headers: { ...corsHeaders, 'Mcp-Session-Id': this.sessionId }
       });
     }
-
-    // Handle POST — MCP JSON-RPC requests
-    if (request.method === 'POST') {
+ 
+    // Handle POST / and POST /mcp — MCP JSON-RPC requests
+    if (request.method === 'POST' && isMcpPath) {
       try {
         const body = await request.json();
         const acceptHeader = request.headers.get('Accept') || '';
         const wantsSSE = acceptHeader.includes('text/event-stream');
-
+ 
         // Handle batch requests (array of JSON-RPC messages)
         const requests: MCPRequest[] = Array.isArray(body) ? body : [body];
         const responses: MCPResponse[] = [];
-
+ 
         for (const req of requests) {
           const response = await this.handleRequest(req);
           if (response !== null) {
             responses.push(response);
           }
         }
-
+ 
         // If client wants SSE (Streamable HTTP transport)
         if (wantsSSE) {
           const sseBody = responses
             .map(r => `event: message\ndata: ${JSON.stringify(r)}\n\n`)
             .join('');
-
+ 
           return new Response(sseBody, {
             status: 200,
             headers: {
@@ -269,7 +274,7 @@ export class MCPServer {
             }
           });
         }
-
+ 
         // Plain JSON response (backward compatible with curl testing)
         const result = responses.length === 1 ? responses[0] : responses;
         return new Response(
@@ -283,21 +288,21 @@ export class MCPServer {
             }
           }
         );
-
+ 
       } catch (error) {
         const errorResponse = this.createErrorResponse(
           null,
           -32700,
           `Parse error: ${error.message}`
         );
-        
+ 
         return new Response(
           JSON.stringify(errorResponse),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
     }
-
+ 
     return new Response(
       JSON.stringify({ error: 'Method not allowed' }),
       { status: 405, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
