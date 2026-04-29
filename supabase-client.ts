@@ -1,6 +1,33 @@
-// Supabase client for NeuralSynch Memory Packet system — v2 (S168 P4)
+// Supabase client for NeuralSynch Memory Packet system — v3 (S173 P3.5)
 //
-// CHANGES FROM v1:
+// CHANGES FROM v2 (S173):
+//   1. Embedding provider swapped from OpenAI to Voyage AI per Decision 10.
+//      v2 read OPENAI_API_KEY (never set on Deno Deploy), called
+//      api.openai.com/v1/embeddings, requested model text-embedding-3-small
+//      (1536-dim). With Decision 10 locked since S147 selecting voyage-4-lite,
+//      and ns_records.embedding column corrected to vector(1024) in S172,
+//      v2 was structurally incapable of returning usable embeddings even if
+//      the key had been set — pgvector would reject 1536-dim writes against
+//      a vector(1024) column.
+//
+//      v3 reads VOYAGE_API_KEY_NEURALSYNCH, calls api.voyageai.com/v1/embeddings,
+//      requests model voyage-4-lite (1024-dim), and adds input_type='query'
+//      per Voyage best practice (queries are optimized differently than
+//      indexed documents — voyage-backfill v2 uses input_type='document'
+//      for the document side; this client uses 'query' for the search side).
+//
+//   2. Added 1024-dim shape validation before caching. Per Decision 12
+//      (schema reality beats decision aspiration), validate that what the
+//      embedding API returns matches the column type the database enforces.
+//      If a future drift slips in, it gets caught at the cache boundary
+//      with a clear log line, not at the pgvector boundary as a cryptic
+//      RPC error.
+//
+//   3. Comment header updated to reflect v3 state. Cache structure (Map,
+//      5-min TTL, query-keyed) preserved verbatim. Graceful degradation
+//      pattern preserved (null embedding → FTS-only ranking).
+//
+// CHANGES FROM v1 (preserved from v2):
 //   1. searchMemory() — was: ilike substring match against non-existent
 //      ns_memory_records table. Now: search_ns_records_hybrid() RPC against
 //      the typed substrate, with optional content_type/domain filters and
@@ -12,8 +39,8 @@
 //   3. getMemoryStats() — was: counted non-existent ns_memory_records. Now:
 //      counts ns_records.
 //   4. Embedding cache — module-level Map<query, {embedding, expires}> with
-//      5-min TTL. Graceful degradation to FTS-only when OPENAI_API_KEY is
-//      unset on Deno Deploy.
+//      5-min TTL. Graceful degradation to FTS-only when API key is unset
+//      on Deno Deploy.
 
 export interface MemoryContext {
   success: boolean;
@@ -57,8 +84,14 @@ export interface SearchFilters {
 const EMBED_CACHE = new Map<string, { embedding: number[]; expires: number }>();
 const EMBED_TTL_MS = 5 * 60 * 1000;
 
+// ─── Voyage AI configuration (S173 — Decision 10 alignment) ─────────────
+const VOYAGE_API_URL    = 'https://api.voyageai.com/v1/embeddings';
+const VOYAGE_MODEL      = 'voyage-4-lite';
+const VOYAGE_INPUT_TYPE = 'query';   // queries optimized differently than documents
+const VOYAGE_DIM        = 1024;      // matches ns_records.embedding column type post-S172
+
 async function getCachedEmbedding(query: string): Promise<number[] | null> {
-  const apiKey = Deno.env.get('OPENAI_API_KEY');
+  const apiKey = Deno.env.get('VOYAGE_API_KEY_NEURALSYNCH');
   if (!apiKey) {
     // Graceful degradation: no key → no vector → FTS-only ranking.
     return null;
@@ -74,34 +107,46 @@ async function getCachedEmbedding(query: string): Promise<number[] | null> {
 
   // Cache miss — fetch and store
   try {
-    const res = await fetch('https://api.openai.com/v1/embeddings', {
+    const res = await fetch(VOYAGE_API_URL, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'text-embedding-3-small',
-        input: query,
+        input:      [query],
+        model:      VOYAGE_MODEL,
+        input_type: VOYAGE_INPUT_TYPE,
       }),
     });
 
     if (!res.ok) {
-      console.error(`[mcp v2] OpenAI embedding ${res.status}: ${await res.text()}`);
+      console.error(`[mcp v3] Voyage embedding ${res.status}: ${await res.text()}`);
       return null;
     }
 
     const data = await res.json();
     const embedding = data?.data?.[0]?.embedding;
     if (!Array.isArray(embedding)) {
-      console.error('[mcp v2] OpenAI embedding response missing data[0].embedding');
+      console.error('[mcp v3] Voyage embedding response missing data[0].embedding');
+      return null;
+    }
+
+    // Decision 12 enforcement: validate dimension at the cache boundary so a
+    // future drift gets caught here with a clear log line, not at the
+    // pgvector boundary as a cryptic RPC error.
+    if (embedding.length !== VOYAGE_DIM) {
+      console.error(
+        `[mcp v3] Voyage embedding dimension mismatch: expected ${VOYAGE_DIM}, ` +
+        `got ${embedding.length}. Wrong model string? Falling back to FTS-only.`,
+      );
       return null;
     }
 
     EMBED_CACHE.set(query, { embedding, expires: now + EMBED_TTL_MS });
     return embedding;
   } catch (err) {
-    console.error(`[mcp v2] OpenAI embedding error: ${(err as Error).message}`);
+    console.error(`[mcp v3] Voyage embedding error: ${(err as Error).message}`);
     return null;
   }
 }
@@ -173,7 +218,7 @@ export class NeuralSynchClient {
 
       return await response.json();
     } catch (error) {
-      console.error('[mcp v2] Memory read failed:', error);
+      console.error('[mcp v3] Memory read failed:', error);
       throw new Error(`Failed to read memory packet: ${(error as Error).message}`);
     }
   }
@@ -236,7 +281,7 @@ export class NeuralSynchClient {
         mode: embedding ? 'hybrid' : 'fts_only',
       };
     } catch (error) {
-      console.error('[mcp v2] Hybrid search failed:', error);
+      console.error('[mcp v3] Hybrid search failed:', error);
       throw new Error(`Failed to search ns_records: ${(error as Error).message}`);
     }
   }
@@ -297,7 +342,7 @@ export class NeuralSynchClient {
         details: data,
       };
     } catch (error) {
-      console.error('[mcp v2] Memory write failed:', error);
+      console.error('[mcp v3] Memory write failed:', error);
       return {
         success: false,
         message: `Failed to write session back: ${(error as Error).message}`,
@@ -347,7 +392,7 @@ export class NeuralSynchClient {
         timestamp: new Date().toISOString(),
       };
     } catch (error) {
-      console.error('[mcp v2] Memory stats failed:', error);
+      console.error('[mcp v3] Memory stats failed:', error);
       throw new Error(`Failed to get memory stats: ${(error as Error).message}`);
     }
   }
