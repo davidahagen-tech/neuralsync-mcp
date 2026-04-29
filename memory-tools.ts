@@ -1,7 +1,18 @@
-// Memory Packet tool handlers for MCP protocol — v2 (S168 P4)
+// Memory Packet tool handlers for MCP protocol — v2.1 (S174 Task 4)
 // Maps MCP tool calls to NeuralSynch Memory Packet operations.
 //
-// CHANGES FROM v1:
+// CHANGES FROM v2 (S174 Task 4):
+//   1. handleMemorySearch surfaces ordinal-lookup observability fields
+//      from supabase-client v3.1: ordinal_match (top-level), and
+//      match_source / combined_score / decision_ordinal (per-result).
+//      Without these, ordinal lookup would work invisibly — the MCP
+//      response would not show whether the ordinal branch fired.
+//   2. handleSearchWrapper UNCHANGED — Deep Research consumers don't
+//      surface match_source. Future enhancement, not S174 scope.
+//   3. MEMORY_TOOLS_SCHEMA UNCHANGED — additive response fields don't
+//      need schema changes.
+//
+// CHANGES FROM v1 (preserved through v2 and v2.1):
 //   1. memory_search / search — surface new typed-substrate fields
 //      (title, content_type, domain, similarity, status). Accept new
 //      optional filter params: content_type, domain. Results come from
@@ -54,7 +65,7 @@ export class MemoryToolHandler {
           throw new Error(`Unknown tool: ${tool.name}`);
       }
     } catch (error) {
-      console.error(`[mcp v2] Tool execution failed for ${tool.name}:`, error);
+      console.error(`[mcp v2.1] Tool execution failed for ${tool.name}:`, error);
       return {
         content: [{
           type: 'text',
@@ -132,7 +143,13 @@ export class MemoryToolHandler {
     };
   }
 
-  // ─── memory_search ───────────────────────────────────────────────────
+  // ─── memory_search v2.1 — surfaces ordinal-lookup observability ─────
+  // Three additive changes from v2:
+  //   1. Destructure ordinal_match from searchRecordsHybrid return.
+  //   2. Surface ordinal_match in the JSON response object.
+  //   3. Surface match_source / combined_score / decision_ordinal in
+  //      the per-result map (undefined for non-ordinal hits — JSON
+  //      stringify drops undefined properties).
 
   private async handleMemorySearch(args: any): Promise<MCPToolResult> {
     const query = args.query;
@@ -147,7 +164,8 @@ export class MemoryToolHandler {
       domain: typeof args.domain === 'string' ? args.domain : undefined,
     };
 
-    const { results, mode } = await this.client.searchRecordsHybrid(query, clientId, limit, filters);
+    // CHANGE 1: destructure ordinal_match from v3.1 return shape
+    const { results, mode, ordinal_match } = await this.client.searchRecordsHybrid(query, clientId, limit, filters);
 
     return {
       content: [{
@@ -155,6 +173,7 @@ export class MemoryToolHandler {
         text: JSON.stringify({
           search_query: query,
           search_mode: mode, // "hybrid" or "fts_only"
+          ordinal_match,     // CHANGE 2: surface ordinal-lookup signal in response
           filters,
           results_count: results.length,
           client_id: clientId,
@@ -174,6 +193,11 @@ export class MemoryToolHandler {
               session_number: r.session_number,
               source_session: r.source_session,
               created_at: r.created_at,
+              // CHANGE 3: surface ordinal-lookup fields when present
+              // (undefined for hybrid hits — JSON.stringify omits undefined)
+              match_source: r.match_source ?? undefined,
+              combined_score: r.combined_score ?? undefined,
+              decision_ordinal: r.decision_ordinal ?? undefined,
             };
           }),
         }, null, 2),
@@ -208,6 +232,8 @@ export class MemoryToolHandler {
   }
 
   // ─── ChatGPT compat: search ──────────────────────────────────────────
+  // NOT MODIFIED in v2.1 — Deep Research consumers don't surface
+  // match_source/combined_score/decision_ordinal. Future enhancement.
 
   private async handleSearchWrapper(args: any): Promise<MCPToolResult> {
     const query = args.query;
@@ -266,7 +292,7 @@ export class MemoryToolHandler {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// MCP DISCOVERY SCHEMAS
+// MCP DISCOVERY SCHEMAS — UNCHANGED in v2.1
 // ═══════════════════════════════════════════════════════════════════════
 // readOnlyHint on each read-only tool prevents unnecessary confirmation
 // modals in ChatGPT. memory_write is the only tool that mutates state.
@@ -275,7 +301,7 @@ export class MemoryToolHandler {
 // Schema draft 7+. Do NOT put `required: true` on individual property defs
 // — ChatGPT's strict schema validator rejects it.
 //
-// New optional params in v2:
+// New optional params in v2 (preserved in v2.1):
 //   - memory_search / search: content_type, domain (filter by typed substrate)
 //   - memory_write: decisions_made, files_created, files_modified,
 //     blockers_encountered, next_session_tasks, handoff_prompt,
@@ -378,7 +404,7 @@ export const MEMORY_TOOLS_SCHEMA = [
   },
   {
     name: 'memory_search',
-    description: 'Hybrid FTS + vector search across the typed memory substrate (ns_records). Combines full-text search with cosine-similarity ranking on embeddings. Optional filters narrow to a specific content_type or domain.',
+    description: 'Hybrid FTS + vector search across the typed memory substrate (ns_records). Combines full-text search with cosine-similarity ranking on embeddings. Optional filters narrow to a specific content_type or domain. v2.1 surfaces ordinal_match for "Decision N" queries.',
     annotations: {
       readOnlyHint: true,
     },
@@ -392,7 +418,7 @@ export const MEMORY_TOOLS_SCHEMA = [
         },
         query: {
           type: 'string',
-          description: 'Search query to find relevant memories',
+          description: 'Search query to find relevant memories. Special pattern: "Decision N" triggers fast ordinal lookup before hybrid search.',
         },
         limit: {
           type: 'number',
