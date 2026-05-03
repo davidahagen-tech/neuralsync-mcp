@@ -1,23 +1,47 @@
-// Memory Packet tool handlers for MCP protocol — v2.1 (S174 Task 4)
+// Memory Packet tool handlers for MCP protocol — v2.2 (S187 substrate-hygiene fix)
 // Maps MCP tool calls to NeuralSynch Memory Packet operations.
 //
-// CHANGES FROM v2 (S174 Task 4):
+// CHANGES FROM v2.1 (S187 substrate-hygiene):
+//   1. MEMORY_TOOLS_SCHEMA.memory_write — fixes the cross-client schema
+//      compatibility bug that caused all five structured array fields
+//      (decisions_made, files_created, files_modified, blockers_encountered,
+//      next_session_tasks) to be silently stripped by the Anthropic MCP
+//      client framework before the JSON-RPC request reached the server.
+//
+//      Root cause: items were declared as bare `{ type: 'object' }` with
+//      no `properties` and no `additionalProperties` directive. ChatGPT's
+//      validator treated this as "any object" (per JSON Schema spec) and
+//      forwarded the array intact. Anthropic's validator treated it as
+//      ambiguous-or-empty-object and dropped the field entirely from
+//      outbound payloads.
+//
+//      Diagnosis confirmed by S187 CP0 log on neuralsync-mcp showing
+//      `args_keys: ["client_id", "objective", "outcome_summary",
+//      "session_number"]` — only the fully-typed scalar fields survived.
+//
+//      Fix: each array's items now declare:
+//        - explicit `properties` for the documented fields
+//        - explicit `required` for the conceptually mandatory subset
+//        - `additionalProperties: true` for forward-compat
+//      The combination satisfies strict validators (Anthropic) without
+//      breaking lenient ones (ChatGPT).
+//
+//   2. No functional code changes. handleMemoryWrite still reads
+//      args.decisions_made etc. unchanged. The fix is schema-only.
+//
+// CHANGES FROM v2 (S174 Task 4, preserved):
 //   1. handleMemorySearch surfaces ordinal-lookup observability fields
 //      from supabase-client v3.1: ordinal_match (top-level), and
 //      match_source / combined_score / decision_ordinal (per-result).
-//      Without these, ordinal lookup would work invisibly — the MCP
-//      response would not show whether the ordinal branch fired.
 //   2. handleSearchWrapper UNCHANGED — Deep Research consumers don't
 //      surface match_source. Future enhancement, not S174 scope.
-//   3. MEMORY_TOOLS_SCHEMA UNCHANGED — additive response fields don't
-//      need schema changes.
 //
-// CHANGES FROM v1 (preserved through v2 and v2.1):
+// CHANGES FROM v1 (preserved):
 //   1. memory_search / search — surface new typed-substrate fields
 //      (title, content_type, domain, similarity, status). Accept new
 //      optional filter params: content_type, domain. Results come from
 //      the hybrid FTS+vector RPC instead of ilike substring match.
-//   2. memory_write — schema now declares the array fields it has always
+//   2. memory_write — schema declares the array fields it has always
 //      silently accepted (decisions_made, files_created, files_modified,
 //      blockers_encountered, next_session_tasks, handoff_prompt, etc.).
 //      Body translates to smart-close v2 structured-mode input.
@@ -65,7 +89,7 @@ export class MemoryToolHandler {
           throw new Error(`Unknown tool: ${tool.name}`);
       }
     } catch (error) {
-      console.error(`[mcp v2.1] Tool execution failed for ${tool.name}:`, error);
+      console.error(`[mcp v2.2] Tool execution failed for ${tool.name}:`, error);
       return {
         content: [{
           type: 'text',
@@ -144,12 +168,6 @@ export class MemoryToolHandler {
   }
 
   // ─── memory_search v2.1 — surfaces ordinal-lookup observability ─────
-  // Three additive changes from v2:
-  //   1. Destructure ordinal_match from searchRecordsHybrid return.
-  //   2. Surface ordinal_match in the JSON response object.
-  //   3. Surface match_source / combined_score / decision_ordinal in
-  //      the per-result map (undefined for non-ordinal hits — JSON
-  //      stringify drops undefined properties).
 
   private async handleMemorySearch(args: any): Promise<MCPToolResult> {
     const query = args.query;
@@ -164,7 +182,6 @@ export class MemoryToolHandler {
       domain: typeof args.domain === 'string' ? args.domain : undefined,
     };
 
-    // CHANGE 1: destructure ordinal_match from v3.1 return shape
     const { results, mode, ordinal_match } = await this.client.searchRecordsHybrid(query, clientId, limit, filters);
 
     return {
@@ -172,8 +189,8 @@ export class MemoryToolHandler {
         type: 'text',
         text: JSON.stringify({
           search_query: query,
-          search_mode: mode, // "hybrid" or "fts_only"
-          ordinal_match,     // CHANGE 2: surface ordinal-lookup signal in response
+          search_mode: mode,
+          ordinal_match,
           filters,
           results_count: results.length,
           client_id: clientId,
@@ -183,18 +200,16 @@ export class MemoryToolHandler {
             return {
               id: r.id,
               title: r.title,
-              record_type: r.content_type,    // legacy alias preserved
+              record_type: r.content_type,
               content_type: r.content_type,
               domain: r.domain,
               status: r.status,
               similarity: r.similarity ?? r.rank ?? null,
-              content: truncated,             // legacy alias preserved
+              content: truncated,
               body: truncated,
               session_number: r.session_number,
               source_session: r.source_session,
               created_at: r.created_at,
-              // CHANGE 3: surface ordinal-lookup fields when present
-              // (undefined for hybrid hits — JSON.stringify omits undefined)
               match_source: r.match_source ?? undefined,
               combined_score: r.combined_score ?? undefined,
               decision_ordinal: r.decision_ordinal ?? undefined,
@@ -219,8 +234,8 @@ export class MemoryToolHandler {
           memory_system_health: 'operational',
           statistics: {
             locked_decisions: stats.locked_decisions,
-            memory_records: stats.memory_records,        // legacy alias
-            ns_records: stats.ns_records,                // explicit new name
+            memory_records: stats.memory_records,
+            ns_records: stats.ns_records,
             session_writebacks: stats.session_writebacks,
             total_artifacts: stats.locked_decisions + stats.ns_records + stats.session_writebacks,
           },
@@ -232,8 +247,6 @@ export class MemoryToolHandler {
   }
 
   // ─── ChatGPT compat: search ──────────────────────────────────────────
-  // NOT MODIFIED in v2.1 — Deep Research consumers don't surface
-  // match_source/combined_score/decision_ordinal. Future enhancement.
 
   private async handleSearchWrapper(args: any): Promise<MCPToolResult> {
     const query = args.query;
@@ -292,7 +305,7 @@ export class MemoryToolHandler {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// MCP DISCOVERY SCHEMAS — UNCHANGED in v2.1
+// MCP DISCOVERY SCHEMAS — v2.2 fix: explicit item shapes for arrays
 // ═══════════════════════════════════════════════════════════════════════
 // readOnlyHint on each read-only tool prevents unnecessary confirmation
 // modals in ChatGPT. memory_write is the only tool that mutates state.
@@ -301,13 +314,15 @@ export class MemoryToolHandler {
 // Schema draft 7+. Do NOT put `required: true` on individual property defs
 // — ChatGPT's strict schema validator rejects it.
 //
-// New optional params in v2 (preserved in v2.1):
-//   - memory_search / search: content_type, domain (filter by typed substrate)
-//   - memory_write: decisions_made, files_created, files_modified,
-//     blockers_encountered, next_session_tasks, handoff_prompt,
-//     carry_forward_context, bolt_project, platform_state
-//
-// Schemas remain JSON-Schema-strict and ChatGPT-compatible.
+// v2.2 FIX: All five array-of-object fields on memory_write now declare:
+//   - explicit `properties` for documented fields
+//   - explicit `required` array (where applicable) for conceptually
+//     mandatory subset
+//   - `additionalProperties: true` for forward-compat
+// This satisfies Anthropic's strict outbound validator without breaking
+// ChatGPT's lenient one. Bare `items: { type: 'object' }` (the v2.1
+// shape) caused Anthropic to silently strip these arrays from outbound
+// JSON-RPC payloads.
 
 export const MEMORY_TOOLS_SCHEMA = [
   {
@@ -359,28 +374,119 @@ export const MEMORY_TOOLS_SCHEMA = [
         },
         decisions_made: {
           type: 'array',
-          description: 'Locked decisions reached this session. Each item: { title, rationale, decision_type?, priority?, confidence_score?, platform? }',
-          items: { type: 'object' },
+          description: 'Locked decisions reached this session.',
+          items: {
+            type: 'object',
+            properties: {
+              title: {
+                type: 'string',
+                description: 'Short decision title (becomes decision_title in ns_locked_decisions; unique per client_id)',
+              },
+              rationale: {
+                type: 'string',
+                description: 'Why this decision was made; long-form supported',
+              },
+              decision_type: {
+                type: 'string',
+                description: 'Optional category (e.g. technical, product_framing, architectural_discovery, implementation, session_close, data_calibration, diagnostic)',
+              },
+              priority: {
+                type: 'number',
+                description: 'Optional priority 0-9 (lower=higher priority; default 5)',
+              },
+              confidence_score: {
+                type: 'number',
+                description: 'Optional confidence 0.0-1.0 decimal (default 0.95)',
+              },
+              platform: {
+                type: 'string',
+                description: 'Optional platform tag (e.g. farsight, neuralsynch, cross-platform)',
+              },
+            },
+            required: ['title', 'rationale'],
+            additionalProperties: true,
+          },
         },
         files_created: {
           type: 'array',
-          description: 'New files created. Each item: { file_path, description?, language? }',
-          items: { type: 'object' },
+          description: 'New files created this session.',
+          items: {
+            type: 'object',
+            properties: {
+              file_path: {
+                type: 'string',
+                description: 'File path',
+              },
+              description: {
+                type: 'string',
+                description: 'Optional description of what the file does',
+              },
+              language: {
+                type: 'string',
+                description: 'Optional language (typescript, python, sql, markdown, etc.)',
+              },
+            },
+            required: ['file_path'],
+            additionalProperties: true,
+          },
         },
         files_modified: {
           type: 'array',
-          description: 'Existing files modified. Each item: { file_path, description?, language? }',
-          items: { type: 'object' },
+          description: 'Existing files modified this session.',
+          items: {
+            type: 'object',
+            properties: {
+              file_path: {
+                type: 'string',
+                description: 'File path',
+              },
+              description: {
+                type: 'string',
+                description: 'Optional description of changes',
+              },
+              language: {
+                type: 'string',
+                description: 'Optional language',
+              },
+            },
+            required: ['file_path'],
+            additionalProperties: true,
+          },
         },
         blockers_encountered: {
           type: 'array',
-          description: 'Errors or blockers hit this session. Each item: { title, description, status?, error_type? }',
-          items: { type: 'object' },
+          description: 'Errors or blockers hit this session.',
+          items: {
+            type: 'object',
+            properties: {
+              title: {
+                type: 'string',
+                description: 'Short blocker title',
+              },
+              description: {
+                type: 'string',
+                description: 'Detailed description of the blocker',
+              },
+              status: {
+                type: 'string',
+                description: 'Optional status (canonical: active, open, resolved, deprecated, superseded, recurring; common variants pending/failed/blocked/in_progress/closed/archived are normalized server-side)',
+              },
+              error_type: {
+                type: 'string',
+                description: 'Optional category (e.g. validation, api, infrastructure, schema, transport)',
+              },
+            },
+            required: ['title', 'description'],
+            additionalProperties: true,
+          },
         },
         next_session_tasks: {
           type: 'array',
-          description: 'Carry-forward tasks for the next session.',
-          items: { type: 'object' },
+          description: 'Carry-forward tasks for the next session. Free-form objects.',
+          items: {
+            type: 'object',
+            additionalProperties: true,
+          },
         },
         handoff_prompt: {
           type: 'string',
