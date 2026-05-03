@@ -1,22 +1,26 @@
-// MCP (Model Context Protocol) implementation for NeuralSynch — v1.1-diag (S187)
+// MCP (Model Context Protocol) implementation for NeuralSynch — v1.0.1 (S187 close)
 // Handles JSON-RPC 2.0 protocol for tool discovery and execution
 // Supports Streamable HTTP transport for Claude Desktop/Web/ChatGPT connectors
 //
-// CHANGES FROM v1 (S187 substrate-hygiene diagnostic build):
-//   1. handleHTTP — adds ONE console.log at the JSON-RPC body arrival
-//      point, immediately after `await request.json()`. Logs the raw
-//      inbound body for tools/call requests so we can see exactly what
-//      the JSON-RPC payload looked like when it landed on the server,
-//      before ANY server code touched it.
+// CHANGES FROM v1.1-diag (S187 close, 2026-05-03):
+//   1. handleHTTP — removed the CP0 diagnostic console.log block at the
+//      JSON-RPC body arrival point (immediately after `await request.json()`).
+//      The block logged raw inbound body shape for tools/call memory_write
+//      requests. Cause of the silent-drop was diagnosed as v2.1
+//      MEMORY_TOOLS_SCHEMA bare items: { type: object } treated
+//      inconsistently by strict MCP validators (claude.ai web framework
+//      specifically) — fixed in memory-tools.ts v2.2 by adding explicit
+//      properties + required + additionalProperties: true to all five
+//      array-of-object item schemas. CP0 served its diagnostic purpose
+//      (confirmed args_keys missing decisions_made entirely from
+//      claude.ai web inbound bodies) and is no longer needed.
 //
-//   2. Diagnostic only. No functional changes. Revert to v1 once root
-//      cause is identified.
+//   2. No functional changes from the v1 baseline. Only the diagnostic
+//      log block and its surrounding try/catch were removed.
 //
-// Purpose: rule out (or confirm) any silent-drop happening server-side
-// in the path from request.json() → handleRequest → handleToolCall →
-// toolHandler.handleToolCall. Pairs with the supabase-client v3.1-diag
-// CP1/CP2/CP3 logs to give end-to-end visibility from inbound HTTP body
-// through to the smart-close POST.
+//   Note: v1.0.1 numbering signals "v1 with diagnostic explicitly
+//   removed" rather than reverting to v1 directly, so the deploy log
+//   carries an explicit cleanup version separate from the original v1.
 
 import { MemoryToolHandler, MEMORY_TOOLS_SCHEMA } from './memory-tools.ts';
 
@@ -64,19 +68,14 @@ export class MCPServer {
       switch (request.method) {
         case 'initialize':
           return this.handleInitialize(request);
-
         case 'notifications/initialized':
           return null;
-
         case 'tools/list':
           return this.handleToolsList(request);
-
         case 'tools/call':
           return this.handleToolCall(request);
-
         case 'ping':
           return this.handlePing(request);
-
         default:
           return this.createErrorResponse(
             request.id,
@@ -123,7 +122,6 @@ export class MCPServer {
 
   private async handleToolCall(request: MCPRequest): Promise<MCPResponse> {
     const { name, arguments: args } = request.params || {};
-
     if (!name) {
       return this.createErrorResponse(
         request.id,
@@ -131,13 +129,11 @@ export class MCPServer {
         'Tool name is required'
       );
     }
-
     try {
       const result = await this.toolHandler.handleToolCall({
         name,
         arguments: args || {}
       });
-
       return {
         jsonrpc: '2.0',
         id: request.id,
@@ -291,47 +287,11 @@ export class MCPServer {
       try {
         const body = await request.json();
 
-        // ───── DIAGNOSTIC LOG — CP0 raw inbound body (S187 v1.1-diag) ─────
-        // Logs the raw JSON-RPC body for tools/call requests immediately
-        // after request.json(), before ANY server-side code touches it.
-        // This is the earliest server-observable point. If the body shows
-        // decisions_made already empty here, the silent-drop is upstream
-        // of this server entirely (in the MCP client framework). If the
-        // body shows decisions_made populated, the drop is happening
-        // server-side between this point and handleMemoryWrite — which
-        // would contradict the source review and demand re-examination.
-        try {
-          const probeBody = Array.isArray(body) ? body[0] : body;
-          if (probeBody?.method === 'tools/call' && probeBody?.params?.name === 'memory_write') {
-            const args = probeBody?.params?.arguments ?? {};
-            console.log('[mcp v1.1-diag] CP0 raw inbound body for memory_write:', JSON.stringify({
-              method: probeBody.method,
-              tool_name: probeBody?.params?.name,
-              session_number: args.session_number,
-              client_id: args.client_id,
-              decisions_made_typeof: typeof args.decisions_made,
-              decisions_made_isArray: Array.isArray(args.decisions_made),
-              decisions_made_length: Array.isArray(args.decisions_made) ? args.decisions_made.length : null,
-              decisions_made_first_item_keys: Array.isArray(args.decisions_made) && args.decisions_made[0]
-                ? Object.keys(args.decisions_made[0])
-                : null,
-              files_created_isArray: Array.isArray(args.files_created),
-              files_created_length: Array.isArray(args.files_created) ? args.files_created.length : null,
-              blockers_encountered_isArray: Array.isArray(args.blockers_encountered),
-              blockers_encountered_length: Array.isArray(args.blockers_encountered) ? args.blockers_encountered.length : null,
-              args_keys: Object.keys(args),
-            }, null, 2));
-          }
-        } catch (logErr) {
-          console.error('[mcp v1.1-diag] CP0 logging failed:', (logErr as Error).message);
-        }
-
         const acceptHeader = request.headers.get('Accept') || '';
         const wantsSSE = acceptHeader.includes('text/event-stream');
 
         const requests: MCPRequest[] = Array.isArray(body) ? body : [body];
         const responses: MCPResponse[] = [];
-
         for (const req of requests) {
           const response = await this.handleRequest(req);
           if (response !== null) {
@@ -343,7 +303,6 @@ export class MCPServer {
           const sseBody = responses
             .map(r => `event: message\ndata: ${JSON.stringify(r)}\n\n`)
             .join('');
-
           return new Response(sseBody, {
             status: 200,
             headers: {
@@ -368,14 +327,12 @@ export class MCPServer {
             }
           }
         );
-
       } catch (error) {
         const errorResponse = this.createErrorResponse(
           null,
           -32700,
           `Parse error: ${error.message}`
         );
-
         return new Response(
           JSON.stringify(errorResponse),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
