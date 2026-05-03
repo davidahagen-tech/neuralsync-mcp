@@ -1,30 +1,30 @@
-// Supabase client for NeuralSynch Memory Packet system — v3.1-diag (S187)
+// Supabase client for NeuralSynch Memory Packet system — v3.2 (S187 close)
 //
-// CHANGES FROM v3.1 (S187 substrate-hygiene diagnostic build):
-//   1. writeSessionBack — adds three console.log checkpoints to localize
-//      the silent-drop of structured arrays (decisions_made, files_created,
-//      blockers_encountered, next_session_tasks). Diagnostic only; revert
-//      to v3.1 once cause is identified and v3.2 patch is shipped.
+// CHANGES FROM v3.1-diag (S187 close, 2026-05-03):
+//   1. writeSessionBack — three diagnostic console.log checkpoints (CP1
+//      entry, CP2 post-normalize, CP3 pre-POST) added in v3.1-diag have
+//      been removed. The silent-drop they were meant to localize was
+//      diagnosed as v2.1 MEMORY_TOOLS_SCHEMA declaring array fields with
+//      bare items: { type: object } and no inner properties — strict MCP
+//      client validators (claude.ai web framework specifically) treat as
+//      ambiguous and silently drop contents. Fixed in memory-tools.ts
+//      v2.2 by adding explicit properties + required + additionalProperties:
+//      true to all five array-of-object item schemas. Verified end-to-end
+//      via Cowork on 2026-05-03 (decision id cfd39dc5 + 12 subsequent
+//      structured locks all returning ns_locked_decisions_ids non-empty).
 //
-//   2. Checkpoint 1 (entry): logs the SessionWriteback object received
-//      from handleMemoryWrite — array typeof, isArray, length, full key
-//      list. Tells us whether the drop happened upstream (memory_tools.ts
-//      or MCP entry point) or downstream (in this file).
+//   2. The hoist `const stringifiedBody = JSON.stringify(payload)` —
+//      added solely to feed CP3's byte-length log — has been removed;
+//      the body is back to inline JSON.stringify(payload) at fetch time.
 //
-//   3. Checkpoint 2 (post-normalize): logs the normalized array lengths
-//      after normalizeDecisions / normalizeFiles / normalizeBlockers.
-//      Tells us if any normalize helper is silently returning [] for a
-//      well-formed input (e.g., due to a paste artifact in the deployed
-//      code, or a typeof mismatch).
+//   3. Log prefix tags updated from [mcp v3.1-diag] to [mcp v3.2] in all
+//      console.error / console.log call sites across the file.
 //
-//   4. Checkpoint 3 (pre-POST): logs the final payload's array lengths
-//      and the byte length of the JSON-stringified body. Tells us if the
-//      body construction itself is dropping anything before fetch.
+//   No functional changes from the v3.1 baseline. Network behavior,
+//   normalize helpers, ordinal lookup, hybrid search, and embedding cache
+//   are all identical to v3.1 / v3.1-diag.
 //
-//   No functional changes. Logs are additive. Network behavior identical
-//   to v3.1.
-//
-// CHANGES FROM v3 (S174 Task 4, preserved through v3.1-diag):
+// CHANGES FROM v3 (S174 Task 4, preserved through v3.1-diag and v3.2):
 //   1. searchRecordsHybrid — adds Decision-ordinal lookup branch BEFORE
 //      hybrid search, mirroring neuralsync-query v2.1.4 (S173 Task 2).
 //      Pattern /\bdecision\s+(\d+)\b/i fires on the query; if matched,
@@ -105,13 +105,11 @@ async function getCachedEmbedding(query: string): Promise<number[] | null> {
   if (!apiKey) {
     return null;
   }
-
   const now = Date.now();
   const cached = EMBED_CACHE.get(query);
   if (cached && cached.expires > now) {
     return cached.embedding;
   }
-
   try {
     const res = await fetch(VOYAGE_API_URL, {
       method: 'POST',
@@ -125,38 +123,32 @@ async function getCachedEmbedding(query: string): Promise<number[] | null> {
         input_type: VOYAGE_INPUT_TYPE,
       }),
     });
-
     if (!res.ok) {
-      console.error(`[mcp v3.1-diag] Voyage embedding ${res.status}: ${await res.text()}`);
+      console.error(`[mcp v3.2] Voyage embedding ${res.status}: ${await res.text()}`);
       return null;
     }
-
     const data = await res.json();
     const embedding = data?.data?.[0]?.embedding;
-
     if (!Array.isArray(embedding)) {
-      console.error('[mcp v3.1-diag] Voyage embedding response missing data[0].embedding');
+      console.error('[mcp v3.2] Voyage embedding response missing data[0].embedding');
       return null;
     }
-
     if (embedding.length !== VOYAGE_DIM) {
       console.error(
-        `[mcp v3.1-diag] Voyage embedding dimension mismatch: expected ${VOYAGE_DIM}, ` +
+        `[mcp v3.2] Voyage embedding dimension mismatch: expected ${VOYAGE_DIM}, ` +
         `got ${embedding.length}. Wrong model string? Falling back to FTS-only.`,
       );
       return null;
     }
-
     EMBED_CACHE.set(query, { embedding, expires: now + EMBED_TTL_MS });
     return embedding;
   } catch (err) {
-    console.error(`[mcp v3.1-diag] Voyage embedding error: ${(err as Error).message}`);
+    console.error(`[mcp v3.2] Voyage embedding error: ${(err as Error).message}`);
     return null;
   }
 }
 
 // ─── Translation helpers (v1 SessionWriteback → smart-close v2 input) ──
-
 function normalizeDecisions(input: SessionWriteback['decisions_made']): Array<Record<string, any>> {
   if (!Array.isArray(input)) return [];
   return input.map((d) => ({
@@ -189,7 +181,6 @@ function normalizeBlockers(input: SessionWriteback['blockers_encountered']): Arr
 }
 
 // ─── Client class ───────────────────────────────────────────────────────
-
 export class NeuralSynchClient {
   private baseUrl: string;
   private anonKey: string;
@@ -200,7 +191,6 @@ export class NeuralSynchClient {
   }
 
   // ─── Memory packet read — unchanged from v1 ──────────────────────────
-
   async readMemoryPacket(clientId: string = 'viralbrain'): Promise<MemoryContext> {
     try {
       const response = await fetch(
@@ -212,20 +202,17 @@ export class NeuralSynchClient {
           },
         },
       );
-
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
-
       return await response.json();
     } catch (error) {
-      console.error('[mcp v3.1-diag] Memory read failed:', error);
+      console.error('[mcp v3.2] Memory read failed:', error);
       throw new Error(`Failed to read memory packet: ${(error as Error).message}`);
     }
   }
 
   // ─── Hybrid search v3.1 — ordinal lookup BEFORE hybrid call ──────────
-
   async searchRecordsHybrid(
     query: string,
     clientId: string = 'viralbrain',
@@ -236,7 +223,6 @@ export class NeuralSynchClient {
     const ordinalMatch = query.match(/\bdecision\s+(\d+)\b/i);
     let ordinalRecord: any = null;
     let matchedOrdinal: number | null = null;
-
     if (ordinalMatch) {
       matchedOrdinal = parseInt(ordinalMatch[1], 10);
       ordinalRecord = await this.fetchDecisionByOrdinal(clientId, matchedOrdinal);
@@ -244,7 +230,6 @@ export class NeuralSynchClient {
 
     // 2. Hybrid search (existing path, unchanged behavior).
     const embedding = await getCachedEmbedding(query);
-
     const rpcBody: Record<string, any> = {
       p_client_id: clientId,
       p_query_text: query,
@@ -264,12 +249,10 @@ export class NeuralSynchClient {
           body: JSON.stringify(rpcBody),
         },
       );
-
       if (!res.ok) {
         const text = await res.text();
         throw new Error(`hybrid search RPC ${res.status}: ${text}`);
       }
-
       let results: any[] = await res.json();
       if (!Array.isArray(results)) results = [];
 
@@ -295,13 +278,12 @@ export class NeuralSynchClient {
         ordinal_match: matchedOrdinal,
       };
     } catch (error) {
-      console.error('[mcp v3.1-diag] Hybrid search failed:', error);
+      console.error('[mcp v3.2] Hybrid search failed:', error);
       throw new Error(`Failed to search ns_records: ${(error as Error).message}`);
     }
   }
 
   // ─── Decision-ordinal lookup helper (S174 Task 4) ────────────────────
-
   private async fetchDecisionByOrdinal(
     clientId: string,
     ordinal: number,
@@ -311,22 +293,18 @@ export class NeuralSynchClient {
         `?client_id=eq.${clientId}` +
         `&decision_ordinal=eq.${ordinal}` +
         `&limit=1`;
-
       const res = await fetch(url, {
         headers: {
           'Authorization': `Bearer ${this.anonKey}`,
           'apikey': this.anonKey,
         },
       });
-
       if (!res.ok) {
-        console.error(`[mcp v3.1-diag] ordinal lookup ${res.status}: ${await res.text()}`);
+        console.error(`[mcp v3.2] ordinal lookup ${res.status}: ${await res.text()}`);
         return null;
       }
-
       const arr = await res.json();
       if (!Array.isArray(arr) || arr.length === 0) return null;
-
       const d = arr[0];
       // Synthesize a record-shaped object so consumers can treat ordinal
       // hits and hybrid hits uniformly.
@@ -348,63 +326,19 @@ export class NeuralSynchClient {
         combined_score: 1.0,
       };
     } catch (err) {
-      console.error('[mcp v3.1-diag] ordinal lookup error:', err);
+      console.error('[mcp v3.2] ordinal lookup error:', err);
       return null;
     }
   }
 
-  // ─── Session writeback (S187 diagnostic — three log checkpoints) ─────
-
+  // ─── Session writeback ───────────────────────────────────────────────
   async writeSessionBack(
     writeback: SessionWriteback,
   ): Promise<{ success: boolean; message: string; details?: any }> {
-
-    // ───── DIAGNOSTIC CHECKPOINT 1 — entry shape from handleMemoryWrite ─
-    // Logs the SessionWriteback object as it arrived. If the structured
-    // arrays show isArray=false or length=0/undefined, the drop happened
-    // upstream (in memory_tools.ts handleMemoryWrite or the MCP entry
-    // point's JSON-RPC parsing).
-    console.log('[mcp v3.1-diag] CP1 writeSessionBack entry:', JSON.stringify({
-      session_number: writeback.session_number,
-      client_id: writeback.client_id,
-      objective_present: typeof writeback.objective === 'string' && writeback.objective.length > 0,
-      outcome_summary_present: typeof writeback.outcome_summary === 'string' && writeback.outcome_summary.length > 0,
-      decisions_made_typeof: typeof writeback.decisions_made,
-      decisions_made_isArray: Array.isArray(writeback.decisions_made),
-      decisions_made_length: Array.isArray(writeback.decisions_made) ? writeback.decisions_made.length : null,
-      files_created_typeof: typeof writeback.files_created,
-      files_created_isArray: Array.isArray(writeback.files_created),
-      files_created_length: Array.isArray(writeback.files_created) ? writeback.files_created.length : null,
-      files_modified_isArray: Array.isArray(writeback.files_modified),
-      files_modified_length: Array.isArray(writeback.files_modified) ? writeback.files_modified.length : null,
-      blockers_encountered_isArray: Array.isArray(writeback.blockers_encountered),
-      blockers_encountered_length: Array.isArray(writeback.blockers_encountered) ? writeback.blockers_encountered.length : null,
-      next_session_tasks_isArray: Array.isArray(writeback.next_session_tasks),
-      next_session_tasks_length: Array.isArray(writeback.next_session_tasks) ? writeback.next_session_tasks.length : null,
-      carry_forward_context_present: typeof writeback.carry_forward_context === 'string' && writeback.carry_forward_context.length > 0,
-      handoff_prompt_present: typeof writeback.handoff_prompt === 'string' && writeback.handoff_prompt.length > 0,
-      raw_keys: Object.keys(writeback ?? {}),
-    }, null, 2));
-
-    // ───── Run the existing normalize helpers ────────────────────────────
     const normalizedDecisions = normalizeDecisions(writeback.decisions_made);
     const normalizedFilesCreated = normalizeFiles(writeback.files_created);
     const normalizedFilesModified = normalizeFiles(writeback.files_modified);
     const normalizedBlockers = normalizeBlockers(writeback.blockers_encountered);
-
-    // ───── DIAGNOSTIC CHECKPOINT 2 — post-normalize shapes ───────────────
-    // If CP1 showed full arrays but CP2 shows empty, a normalize helper is
-    // the silent-drop point. Most likely cause would be a paste artifact
-    // in the deployed source (e.g., `[input.map](http://input.map)` from
-    // markdown auto-linking) — though that would also throw a syntax error,
-    // so this is unlikely. Still useful for definitive ruling.
-    console.log('[mcp v3.1-diag] CP2 post-normalize:', JSON.stringify({
-      normalizedDecisions_length: normalizedDecisions.length,
-      normalizedFilesCreated_length: normalizedFilesCreated.length,
-      normalizedFilesModified_length: normalizedFilesModified.length,
-      normalizedBlockers_length: normalizedBlockers.length,
-      first_decision_title: normalizedDecisions[0]?.title ?? null,
-    }, null, 2));
 
     const payload = {
       client_id: writeback.client_id,
@@ -423,22 +357,6 @@ export class NeuralSynchClient {
       trigger_source: 'mcp-write',
     };
 
-    const stringifiedBody = JSON.stringify(payload);
-
-    // ───── DIAGNOSTIC CHECKPOINT 3 — final POST body ─────────────────────
-    // If CP2 showed full normalized arrays but CP3 shows lost length or a
-    // suspicious byte size, the drop is in JSON.stringify (extremely
-    // unlikely but completable for evidentiary cleanliness).
-    console.log('[mcp v3.1-diag] CP3 pre-POST payload:', JSON.stringify({
-      payload_decisions_made_length: payload.decisions_made.length,
-      payload_files_created_length: payload.files_created.length,
-      payload_files_modified_length: payload.files_modified.length,
-      payload_blockers_encountered_length: payload.blockers_encountered.length,
-      payload_next_session_tasks_length: payload.next_session_tasks.length,
-      stringified_body_bytes: stringifiedBody.length,
-      target_url: `${this.baseUrl}/functions/v1/neuralsync-smart-close`,
-    }, null, 2));
-
     try {
       const response = await fetch(
         `${this.baseUrl}/functions/v1/neuralsync-smart-close`,
@@ -449,7 +367,7 @@ export class NeuralSynchClient {
             'Authorization': `Bearer ${this.anonKey}`,
             'apikey': this.anonKey,
           },
-          body: stringifiedBody,
+          body: JSON.stringify(payload),
         },
       );
 
@@ -470,7 +388,7 @@ export class NeuralSynchClient {
         details: data,
       };
     } catch (error) {
-      console.error('[mcp v3.1-diag] Memory write failed:', error);
+      console.error('[mcp v3.2] Memory write failed:', error);
       return {
         success: false,
         message: `Failed to write session back: ${(error as Error).message}`,
@@ -479,7 +397,6 @@ export class NeuralSynchClient {
   }
 
   // ─── Memory stats (fixed table reference) ────────────────────────────
-
   async getMemoryStats(clientId: string = 'viralbrain'): Promise<any> {
     try {
       const queries = [
@@ -487,7 +404,6 @@ export class NeuralSynchClient {
         `${this.baseUrl}/rest/v1/ns_records?client_id=eq.${clientId}&select=id`,
         `${this.baseUrl}/rest/v1/ns_session_writebacks?client_id=eq.${clientId}&select=id`,
       ];
-
       const responses = await Promise.all(
         queries.map((url) =>
           fetch(url, {
@@ -501,14 +417,12 @@ export class NeuralSynchClient {
           }),
         ),
       );
-
       const counts = responses.map((r) => {
         const cr = r.headers.get('Content-Range');
         if (!cr) return 0;
         const total = cr.split('/')[1];
         return total && total !== '*' ? parseInt(total, 10) : 0;
       });
-
       return {
         locked_decisions: counts[0] ?? 0,
         memory_records: counts[1] ?? 0,
@@ -518,7 +432,7 @@ export class NeuralSynchClient {
         timestamp: new Date().toISOString(),
       };
     } catch (error) {
-      console.error('[mcp v3.1-diag] Memory stats failed:', error);
+      console.error('[mcp v3.2] Memory stats failed:', error);
       throw new Error(`Failed to get memory stats: ${(error as Error).message}`);
     }
   }
