@@ -1,6 +1,32 @@
-// Supabase client for NeuralSynch Memory Packet system — v3.2 (S187 close)
+// Supabase client for NeuralSynch Memory Packet system — v3.3 (S249 close)
 //
-// CHANGES FROM v3.1-diag (S187 close, 2026-05-03):
+// CHANGES FROM v3.2 (S249, 2026-06-13):
+//   1. SECURITY-DRIVEN: the substrate tables were publicly readable via the
+//      hardcoded anon key (RLS was off / permissive {public} policies). That
+//      exposure was closed S249 by enabling RLS and dropping all public/anon
+//      read+write policies, keeping only service_role policies. Consequence:
+//      the THREE methods that hit PostgREST/RPC directly with the anon key
+//      (searchRecordsHybrid → rpc/search_ns_records_hybrid, fetchDecisionByOrdinal,
+//      getMemoryStats) began returning "permission denied for table ns_records".
+//   2. FIX: added private serviceKey, read from Deno env SUPABASE_SERVICE_ROLE_KEY
+//      (falls back to anonKey if unset, so the server still boots). The three
+//      direct-REST methods now present serviceKey in Authorization + apikey,
+//      so PostgREST runs them as service_role (bypasses RLS). The public anon
+//      key remains denied at the table level — the vault stays shut.
+//   3. UNCHANGED: readMemoryPacket and writeSessionBack still use anonKey — they
+//      call edge functions (retrieve-context-packet, neuralsync-smart-close)
+//      which have JWT off and use their own internal service_role key, so they
+//      were never affected by the lockdown. No change needed.
+//   4. OPERATIONAL: SUPABASE_SERVICE_ROLE_KEY must be set as a Deno Deploy
+//      environment SECRET for the neuralsync-mcp project. It must NEVER be
+//      hardcoded in this file or committed to the repo (unlike anonKey, which
+//      is public by design).
+//
+//   No other functional changes from v3.2. Voyage embedding cache, normalize
+//   helpers, ordinal lookup logic, hybrid search flow, and smart-close write
+//   path are all identical to v3.2.
+//
+// CHANGES FROM v3.1 (S187 close, preserved):
 //   1. writeSessionBack — three diagnostic console.log checkpoints (CP1
 //      entry, CP2 post-normalize, CP3 pre-POST) added in v3.1-diag have
 //      been removed. The silent-drop they were meant to localize was
@@ -124,18 +150,18 @@ async function getCachedEmbedding(query: string): Promise<number[] | null> {
       }),
     });
     if (!res.ok) {
-      console.error(`[mcp v3.2] Voyage embedding ${res.status}: ${await res.text()}`);
+      console.error(`[mcp v3.3] Voyage embedding ${res.status}: ${await res.text()}`);
       return null;
     }
     const data = await res.json();
     const embedding = data?.data?.[0]?.embedding;
     if (!Array.isArray(embedding)) {
-      console.error('[mcp v3.2] Voyage embedding response missing data[0].embedding');
+      console.error('[mcp v3.3] Voyage embedding response missing data[0].embedding');
       return null;
     }
     if (embedding.length !== VOYAGE_DIM) {
       console.error(
-        `[mcp v3.2] Voyage embedding dimension mismatch: expected ${VOYAGE_DIM}, ` +
+        `[mcp v3.3] Voyage embedding dimension mismatch: expected ${VOYAGE_DIM}, ` +
         `got ${embedding.length}. Wrong model string? Falling back to FTS-only.`,
       );
       return null;
@@ -143,7 +169,7 @@ async function getCachedEmbedding(query: string): Promise<number[] | null> {
     EMBED_CACHE.set(query, { embedding, expires: now + EMBED_TTL_MS });
     return embedding;
   } catch (err) {
-    console.error(`[mcp v3.2] Voyage embedding error: ${(err as Error).message}`);
+    console.error(`[mcp v3.3] Voyage embedding error: ${(err as Error).message}`);
     return null;
   }
 }
@@ -184,13 +210,19 @@ function normalizeBlockers(input: SessionWriteback['blockers_encountered']): Arr
 export class NeuralSynchClient {
   private baseUrl: string;
   private anonKey: string;
+  private serviceKey: string;
 
   constructor() {
     this.baseUrl = 'https://udafklielwqdppnagtwc.supabase.co';
     this.anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVkYWZrbGllbHdxZHBwbmFndHdjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzNTgxNzgsImV4cCI6MjA4OTkzNDE3OH0.0ueCBWNfdZGOHsLlJW9P3tUQ7QgD7tGmM6CQ1ZbOaAQ';
+    // S249: service_role key for direct-REST/RPC calls that RLS now gates.
+    // Read from Deno env SECRET — never hardcode service_role in this file.
+    // Falls back to anonKey if unset so the server still boots (search/stats
+    // will simply remain RLS-blocked until the env var is configured).
+    this.serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? this.anonKey;
   }
 
-  // ─── Memory packet read — unchanged from v1 ──────────────────────────
+  // ─── Memory packet read — unchanged from v1 (edge function, service_role internal) ──
   async readMemoryPacket(clientId: string = 'viralbrain'): Promise<MemoryContext> {
     try {
       const response = await fetch(
@@ -207,7 +239,7 @@ export class NeuralSynchClient {
       }
       return await response.json();
     } catch (error) {
-      console.error('[mcp v3.2] Memory read failed:', error);
+      console.error('[mcp v3.3] Memory read failed:', error);
       throw new Error(`Failed to read memory packet: ${(error as Error).message}`);
     }
   }
@@ -242,8 +274,9 @@ export class NeuralSynchClient {
         {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${this.anonKey}`,
-            'apikey': this.anonKey,
+            // S249: service_role — RLS gates ns_records against anon.
+            'Authorization': `Bearer ${this.serviceKey}`,
+            'apikey': this.serviceKey,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify(rpcBody),
@@ -278,7 +311,7 @@ export class NeuralSynchClient {
         ordinal_match: matchedOrdinal,
       };
     } catch (error) {
-      console.error('[mcp v3.2] Hybrid search failed:', error);
+      console.error('[mcp v3.3] Hybrid search failed:', error);
       throw new Error(`Failed to search ns_records: ${(error as Error).message}`);
     }
   }
@@ -295,12 +328,13 @@ export class NeuralSynchClient {
         `&limit=1`;
       const res = await fetch(url, {
         headers: {
-          'Authorization': `Bearer ${this.anonKey}`,
-          'apikey': this.anonKey,
+          // S249: service_role — RLS gates ns_locked_decisions against anon.
+          'Authorization': `Bearer ${this.serviceKey}`,
+          'apikey': this.serviceKey,
         },
       });
       if (!res.ok) {
-        console.error(`[mcp v3.2] ordinal lookup ${res.status}: ${await res.text()}`);
+        console.error(`[mcp v3.3] ordinal lookup ${res.status}: ${await res.text()}`);
         return null;
       }
       const arr = await res.json();
@@ -326,12 +360,12 @@ export class NeuralSynchClient {
         combined_score: 1.0,
       };
     } catch (err) {
-      console.error('[mcp v3.2] ordinal lookup error:', err);
+      console.error('[mcp v3.3] ordinal lookup error:', err);
       return null;
     }
   }
 
-  // ─── Session writeback ───────────────────────────────────────────────
+  // ─── Session writeback — unchanged from v3.2 (edge function, service_role internal) ──
   async writeSessionBack(
     writeback: SessionWriteback,
   ): Promise<{ success: boolean; message: string; details?: any }> {
@@ -388,7 +422,7 @@ export class NeuralSynchClient {
         details: data,
       };
     } catch (error) {
-      console.error('[mcp v3.2] Memory write failed:', error);
+      console.error('[mcp v3.3] Memory write failed:', error);
       return {
         success: false,
         message: `Failed to write session back: ${(error as Error).message}`,
@@ -408,8 +442,9 @@ export class NeuralSynchClient {
         queries.map((url) =>
           fetch(url, {
             headers: {
-              'Authorization': `Bearer ${this.anonKey}`,
-              'apikey': this.anonKey,
+              // S249: service_role — RLS gates these tables against anon.
+              'Authorization': `Bearer ${this.serviceKey}`,
+              'apikey': this.serviceKey,
               'Prefer': 'count=exact',
               'Range-Unit': 'items',
               'Range': '0-0',
@@ -432,7 +467,7 @@ export class NeuralSynchClient {
         timestamp: new Date().toISOString(),
       };
     } catch (error) {
-      console.error('[mcp v3.2] Memory stats failed:', error);
+      console.error('[mcp v3.3] Memory stats failed:', error);
       throw new Error(`Failed to get memory stats: ${(error as Error).message}`);
     }
   }
