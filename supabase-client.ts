@@ -1,4 +1,35 @@
-// Supabase client for NeuralSynch Memory Packet system — v3.3 (S249 close)
+// Supabase client for NeuralSynch Memory Packet system — v3.4 (S250 recall-parity)
+//
+// CHANGES FROM v3.3 (S250, recall + retrieval parity — ADDITIVE):
+//   1. recallMemory() — NEW. The synthesizing recall path that mirrors the
+//      direct-path edge function neuralsync-query for cross-path parity:
+//        a. Generate a query embedding via Voyage AI (voyage-4-lite,
+//           input_type='query', 3s timeout, 1024-dim shape check). On ANY
+//           failure it falls back to a null embedding (FTS-only), exactly
+//           like the direct path.
+//        b. Call RPC search_ns_records_hybrid with p_query_embedding (vector
+//           or null) and p_limit: 12. The RPC is already recency-aware;
+//           recency params are intentionally omitted so its defaults apply.
+//        c. Synthesize an answer with Anthropic (claude-haiku-4-5-20251001,
+//           max_tokens 600) strictly from the returned records, emitting
+//           "This is not yet in your IP store." when absent.
+//      Returns { answer, citations, sources } where citations mirror the
+//      field just added to neuralsync-query.
+//   2. rpcCall() — NEW private service_role RPC helper. Mirrors the
+//      Authorization/apikey header pattern of searchRecordsHybrid for the
+//      retrieval RPCs (ns_get_recent, ns_get_latest_session, ns_get_by_session,
+//      ns_filter_records, ns_current_session). One code path, one auth shape.
+//   3. getRecent / getLatestSession / getBySession / filterRecords /
+//      currentSession — NEW thin wrappers over rpcCall(), each forwarding the
+//      named p_* RPC parameters with the documented defaults.
+//   4. embedQuery() — NEW private helper: a 3s-timeout, non-cached query
+//      embedding used only by recallMemory() so the recall path matches the
+//      direct-path timeout contract. The cached getCachedEmbedding() used by
+//      searchRecordsHybrid is UNCHANGED.
+//
+//   No existing behavior changed. All v3.3 methods, the embedding cache,
+//   normalize helpers, ordinal lookup, hybrid search, and smart-close write
+//   path are byte-for-byte identical to v3.3.
 //
 // CHANGES FROM v3.2 (S249, 2026-06-13):
 //   1. SECURITY-DRIVEN: the substrate tables were publicly readable via the
@@ -116,6 +147,38 @@ export interface SearchFilters {
   domain?: string;
 }
 
+// v3.4 — filter params accepted by filterRecords() → ns_filter_records RPC.
+// All optional; client_id is injected by the caller, never the model.
+export interface FilterParams {
+  content_type?: string;
+  domain?: string;
+  status?: string;
+  tags?: string[];
+  attributes?: Record<string, any>;
+  title_ilike?: string;
+  body_ilike?: string;
+  since?: string;
+  until?: string;
+  order?: string;
+  limit?: number;
+}
+
+// v3.4 — params accepted by getRecent() → ns_get_recent RPC.
+export interface RecentParams {
+  content_type?: string;
+  domain?: string;
+  status?: string;
+  since?: string;
+  limit?: number;
+}
+
+// v3.4 — shape returned by recallMemory().
+export interface RecallResult {
+  answer: string;
+  citations: Array<Record<string, any>>;
+  sources: any[];
+}
+
 // ─── Module-level embedding cache (5-min TTL, query-keyed) ──────────────
 const EMBED_CACHE = new Map<string, { embedding: number[]; expires: number }>();
 const EMBED_TTL_MS = 5 * 60 * 1000;
@@ -125,6 +188,13 @@ const VOYAGE_API_URL    = 'https://api.voyageai.com/v1/embeddings';
 const VOYAGE_MODEL      = 'voyage-4-lite';
 const VOYAGE_INPUT_TYPE = 'query';
 const VOYAGE_DIM        = 1024;
+
+// ─── Anthropic synthesis configuration (S250 — recall parity) ───────────
+const ANTHROPIC_API_URL    = 'https://api.anthropic.com/v1/messages';
+const ANTHROPIC_MODEL      = 'claude-haiku-4-5-20251001';
+const ANTHROPIC_VERSION    = '2023-06-01';
+const ANTHROPIC_MAX_TOKENS = 600;
+const RECALL_EMBED_TIMEOUT_MS = 3000;
 
 async function getCachedEmbedding(query: string): Promise<number[] | null> {
   const apiKey = Deno.env.get('VOYAGE_API_KEY_NEURALSYNCH');
@@ -150,18 +220,18 @@ async function getCachedEmbedding(query: string): Promise<number[] | null> {
       }),
     });
     if (!res.ok) {
-      console.error(`[mcp v3.3] Voyage embedding ${res.status}: ${await res.text()}`);
+      console.error(`[mcp v3.4] Voyage embedding ${res.status}: ${await res.text()}`);
       return null;
     }
     const data = await res.json();
     const embedding = data?.data?.[0]?.embedding;
     if (!Array.isArray(embedding)) {
-      console.error('[mcp v3.3] Voyage embedding response missing data[0].embedding');
+      console.error('[mcp v3.4] Voyage embedding response missing data[0].embedding');
       return null;
     }
     if (embedding.length !== VOYAGE_DIM) {
       console.error(
-        `[mcp v3.3] Voyage embedding dimension mismatch: expected ${VOYAGE_DIM}, ` +
+        `[mcp v3.4] Voyage embedding dimension mismatch: expected ${VOYAGE_DIM}, ` +
         `got ${embedding.length}. Wrong model string? Falling back to FTS-only.`,
       );
       return null;
@@ -169,8 +239,53 @@ async function getCachedEmbedding(query: string): Promise<number[] | null> {
     EMBED_CACHE.set(query, { embedding, expires: now + EMBED_TTL_MS });
     return embedding;
   } catch (err) {
-    console.error(`[mcp v3.3] Voyage embedding error: ${(err as Error).message}`);
+    console.error(`[mcp v3.4] Voyage embedding error: ${(err as Error).message}`);
     return null;
+  }
+}
+
+// ─── Recall-path query embedding (S250) — 3s timeout, FTS fallback ──────
+// Mirrors the direct-path neuralsync-query embedding contract: a hard 3s
+// timeout, 1024-dim shape check, and a null return on ANY failure so the
+// caller silently degrades to FTS-only. Not cached (kept separate from
+// getCachedEmbedding so the existing hybrid-search path is untouched).
+async function embedQuery(question: string): Promise<number[] | null> {
+  const apiKey = Deno.env.get('VOYAGE_API_KEY_NEURALSYNCH');
+  if (!apiKey) {
+    return null;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RECALL_EMBED_TIMEOUT_MS);
+  try {
+    const res = await fetch(VOYAGE_API_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        input:      [question],
+        model:      VOYAGE_MODEL,
+        input_type: VOYAGE_INPUT_TYPE,
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      console.error(`[mcp v3.4] recall embedding ${res.status}: ${await res.text()}`);
+      return null;
+    }
+    const data = await res.json();
+    const embedding = data?.data?.[0]?.embedding;
+    if (!Array.isArray(embedding) || embedding.length !== VOYAGE_DIM) {
+      console.error('[mcp v3.4] recall embedding shape invalid; falling back to FTS-only.');
+      return null;
+    }
+    return embedding;
+  } catch (err) {
+    console.error(`[mcp v3.4] recall embedding error: ${(err as Error).message}`);
+    return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -239,7 +354,7 @@ export class NeuralSynchClient {
       }
       return await response.json();
     } catch (error) {
-      console.error('[mcp v3.3] Memory read failed:', error);
+      console.error('[mcp v3.4] Memory read failed:', error);
       throw new Error(`Failed to read memory packet: ${(error as Error).message}`);
     }
   }
@@ -311,7 +426,7 @@ export class NeuralSynchClient {
         ordinal_match: matchedOrdinal,
       };
     } catch (error) {
-      console.error('[mcp v3.3] Hybrid search failed:', error);
+      console.error('[mcp v3.4] Hybrid search failed:', error);
       throw new Error(`Failed to search ns_records: ${(error as Error).message}`);
     }
   }
@@ -334,7 +449,7 @@ export class NeuralSynchClient {
         },
       });
       if (!res.ok) {
-        console.error(`[mcp v3.3] ordinal lookup ${res.status}: ${await res.text()}`);
+        console.error(`[mcp v3.4] ordinal lookup ${res.status}: ${await res.text()}`);
         return null;
       }
       const arr = await res.json();
@@ -360,9 +475,213 @@ export class NeuralSynchClient {
         combined_score: 1.0,
       };
     } catch (err) {
-      console.error('[mcp v3.3] ordinal lookup error:', err);
+      console.error('[mcp v3.4] ordinal lookup error:', err);
       return null;
     }
+  }
+
+  // ─── Service-role RPC helper (S250) ──────────────────────────────────
+  // Single POST path for the retrieval RPCs, mirroring the
+  // Authorization/apikey header shape used by searchRecordsHybrid. PostgREST
+  // runs the function as service_role (RLS gates these tables against anon).
+  private async rpcCall(fn: string, body: Record<string, any>): Promise<any> {
+    try {
+      const res = await fetch(
+        `${this.baseUrl}/rest/v1/rpc/${fn}`,
+        {
+          method: 'POST',
+          headers: {
+            // S250: service_role — RLS gates the substrate tables against anon.
+            'Authorization': `Bearer ${this.serviceKey}`,
+            'apikey': this.serviceKey,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        },
+      );
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`${fn} RPC ${res.status}: ${text}`);
+      }
+      return await res.json();
+    } catch (error) {
+      console.error(`[mcp v3.4] RPC ${fn} failed:`, error);
+      throw new Error(`Failed to call ${fn}: ${(error as Error).message}`);
+    }
+  }
+
+  // ─── Synthesizing recall (S250) — mirrors direct-path neuralsync-query ─
+  async recallMemory(
+    question: string,
+    clientId: string = 'viralbrain',
+  ): Promise<RecallResult> {
+    // 1. Query embedding — 3s timeout, FTS fallback on any failure.
+    const embedding = await embedQuery(question);
+
+    // 2. Hybrid recall RPC. The RPC is already recency-aware; recency params
+    //    are intentionally omitted so its defaults apply.
+    const rpcBody: Record<string, any> = {
+      p_client_id: clientId,
+      p_query_text: question,
+      p_query_embedding: embedding ?? null,
+      p_limit: 12,
+    };
+    let records: any[] = await this.rpcCall('search_ns_records_hybrid', rpcBody);
+    if (!Array.isArray(records)) records = [];
+
+    // 3. Citations — mirrors the field just added to neuralsync-query.
+    const citations = records.map((r: any) => ({
+      id: r.id,
+      title: r.title,
+      content_type: r.content_type,
+      domain: r.domain,
+      session_number: r.session_number,
+      match_source: r.match_source ?? undefined,
+      score: typeof r.combined_score === 'number'
+        ? Math.round(r.combined_score * 1000) / 1000
+        : null,
+    }));
+
+    // 4. Synthesize the answer with Anthropic, strictly from the records.
+    const answer = await this.synthesizeAnswer(question, records);
+
+    return { answer, citations, sources: records };
+  }
+
+  // ─── Anthropic synthesis (S250) — answers ONLY from supplied records ──
+  private async synthesizeAnswer(question: string, records: any[]): Promise<string> {
+    const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
+    const absentMsg = 'This is not yet in your IP store.';
+    if (!apiKey) {
+      console.error('[mcp v3.4] ANTHROPIC_API_KEY unset — cannot synthesize recall answer.');
+      return absentMsg;
+    }
+    if (!Array.isArray(records) || records.length === 0) {
+      return absentMsg;
+    }
+
+    const context = records
+      .map((r: any, i: number) => {
+        const body = typeof r.body === 'string' ? r.body : '';
+        return `[${i + 1}] (${r.content_type ?? 'record'} — ${r.title ?? 'untitled'})\n${body}`;
+      })
+      .join('\n\n');
+
+    const prompt =
+      `Answer the question using ONLY the NeuralSynch memory records below. ` +
+      `Do not use outside knowledge. If the records do not contain the answer, ` +
+      `reply with exactly: "${absentMsg}"\n\n` +
+      `Records:\n${context}\n\n` +
+      `Question: ${question}`;
+
+    try {
+      const res = await fetch(ANTHROPIC_API_URL, {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': ANTHROPIC_VERSION,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: ANTHROPIC_MODEL,
+          max_tokens: ANTHROPIC_MAX_TOKENS,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+      if (!res.ok) {
+        console.error(`[mcp v3.4] Anthropic synthesis ${res.status}: ${await res.text()}`);
+        return absentMsg;
+      }
+      const data = await res.json();
+      const text = data?.content?.[0]?.text;
+      return typeof text === 'string' && text.length > 0 ? text : absentMsg;
+    } catch (err) {
+      console.error(`[mcp v3.4] Anthropic synthesis error: ${(err as Error).message}`);
+      return absentMsg;
+    }
+  }
+
+  // ─── Recent records (S250) — ns_get_recent ───────────────────────────
+  async getRecent(
+    clientId: string = 'viralbrain',
+    params: RecentParams = {},
+  ): Promise<any[]> {
+    const out = await this.rpcCall('ns_get_recent', {
+      p_client_id: clientId,
+      p_content_type: params.content_type ?? null,
+      p_domain: params.domain ?? null,
+      p_status: params.status ?? 'active',
+      p_since: params.since ?? null,
+      p_limit: params.limit ?? 20,
+    });
+    return Array.isArray(out) ? out : [];
+  }
+
+  // ─── Latest session (S250) — ns_get_latest_session ───────────────────
+  async getLatestSession(
+    clientId: string = 'viralbrain',
+    status: string = 'active',
+  ): Promise<any[]> {
+    const out = await this.rpcCall('ns_get_latest_session', {
+      p_client_id: clientId,
+      p_status: status,
+    });
+    return Array.isArray(out) ? out : out;
+  }
+
+  // ─── Records by session (S250) — ns_get_by_session ───────────────────
+  async getBySession(
+    clientId: string = 'viralbrain',
+    sessionNumber: number,
+    status?: string,
+  ): Promise<any[]> {
+    const out = await this.rpcCall('ns_get_by_session', {
+      p_client_id: clientId,
+      p_session_number: sessionNumber,
+      p_status: status ?? null,
+    });
+    return Array.isArray(out) ? out : [];
+  }
+
+  // ─── Filtered records (S250) — ns_filter_records ─────────────────────
+  async filterRecords(
+    clientId: string = 'viralbrain',
+    params: FilterParams = {},
+  ): Promise<any[]> {
+    const out = await this.rpcCall('ns_filter_records', {
+      p_client_id: clientId,
+      p_content_type: params.content_type ?? null,
+      p_domain: params.domain ?? null,
+      p_status: params.status ?? null,
+      p_tags: params.tags ?? null,
+      p_attributes: params.attributes ?? null,
+      p_title_ilike: params.title_ilike ?? null,
+      p_body_ilike: params.body_ilike ?? null,
+      p_since: params.since ?? null,
+      p_until: params.until ?? null,
+      p_order: params.order ?? null,
+      p_limit: params.limit ?? null,
+    });
+    return Array.isArray(out) ? out : [];
+  }
+
+  // ─── Current session number (S250) — ns_current_session (bigint) ─────
+  async currentSession(clientId: string = 'viralbrain'): Promise<number | null> {
+    const out = await this.rpcCall('ns_current_session', {
+      p_client_id: clientId,
+    });
+    // PostgREST returns a scalar RPC result directly (number) or as a wrapped
+    // array depending on function signature; normalize to a plain number.
+    if (typeof out === 'number') return out;
+    if (Array.isArray(out) && out.length > 0) {
+      const first = out[0];
+      if (typeof first === 'number') return first;
+      if (first && typeof first === 'object') {
+        const v = first.ns_current_session ?? Object.values(first)[0];
+        return typeof v === 'number' ? v : (v != null ? Number(v) : null);
+      }
+    }
+    return out != null ? Number(out) : null;
   }
 
   // ─── Session writeback — unchanged from v3.2 (edge function, service_role internal) ──
@@ -422,7 +741,7 @@ export class NeuralSynchClient {
         details: data,
       };
     } catch (error) {
-      console.error('[mcp v3.3] Memory write failed:', error);
+      console.error('[mcp v3.4] Memory write failed:', error);
       return {
         success: false,
         message: `Failed to write session back: ${(error as Error).message}`,
@@ -467,7 +786,7 @@ export class NeuralSynchClient {
         timestamp: new Date().toISOString(),
       };
     } catch (error) {
-      console.error('[mcp v3.3] Memory stats failed:', error);
+      console.error('[mcp v3.4] Memory stats failed:', error);
       throw new Error(`Failed to get memory stats: ${(error as Error).message}`);
     }
   }
