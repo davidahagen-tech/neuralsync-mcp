@@ -1,7 +1,28 @@
-// Memory Packet tool handlers for MCP protocol — v2.2 (S187 substrate-hygiene fix)
+// Memory Packet tool handlers for MCP protocol — v2.3 (S250 recall + retrieval)
 // Maps MCP tool calls to NeuralSynch Memory Packet operations.
 //
-// CHANGES FROM v2.1 (S187 substrate-hygiene):
+// CHANGES FROM v2.2 (S250 recall + retrieval — ADDITIVE):
+//   1. SIX new read-only tools, all client_id-injected server-side
+//      (default 'viralbrain'; never required from the model):
+//        - memory_recall          → client.recallMemory (synthesizing recall,
+//                                    mirrors direct-path neuralsync-query)
+//        - memory_get_recent      → RPC ns_get_recent
+//        - memory_get_latest_session → RPC ns_get_latest_session
+//        - memory_get_by_session  → RPC ns_get_by_session
+//        - memory_filter          → RPC ns_filter_records
+//        - memory_current_session → RPC ns_current_session (bigint)
+//      Each adds a dispatch case in handleToolCall, a private handler, and a
+//      MEMORY_TOOLS_SCHEMA entry. No existing tool, handler, or schema is
+//      altered.
+//   2. memory_recall returns { answer, citations, sources }; citations mirror
+//      the field just added to neuralsync-query:
+//      { id, title, content_type, domain, session_number, match_source, score }.
+//   3. Object/array-of-object params on the new schemas (memory_filter.tags,
+//      memory_filter.attributes) follow the v2.2 explicit-shape rule:
+//      explicit properties/items + additionalProperties so strict validators
+//      (Anthropic) do not silently strip them.
+//
+// CHANGES FROM v2.1 (S187 substrate-hygiene, preserved):
 //   1. MEMORY_TOOLS_SCHEMA.memory_write — fixes the cross-client schema
 //      compatibility bug that caused all five structured array fields
 //      (decisions_made, files_created, files_modified, blockers_encountered,
@@ -81,6 +102,18 @@ export class MemoryToolHandler {
           return await this.handleMemorySearch(tool.arguments);
         case 'memory_stats':
           return await this.handleMemoryStats(tool.arguments);
+        case 'memory_recall':
+          return await this.handleMemoryRecall(tool.arguments);
+        case 'memory_get_recent':
+          return await this.handleMemoryGetRecent(tool.arguments);
+        case 'memory_get_latest_session':
+          return await this.handleMemoryGetLatestSession(tool.arguments);
+        case 'memory_get_by_session':
+          return await this.handleMemoryGetBySession(tool.arguments);
+        case 'memory_filter':
+          return await this.handleMemoryFilter(tool.arguments);
+        case 'memory_current_session':
+          return await this.handleMemoryCurrentSession(tool.arguments);
         case 'search':
           return await this.handleSearchWrapper(tool.arguments);
         case 'fetch':
@@ -89,7 +122,7 @@ export class MemoryToolHandler {
           throw new Error(`Unknown tool: ${tool.name}`);
       }
     } catch (error) {
-      console.error(`[mcp v2.2] Tool execution failed for ${tool.name}:`, error);
+      console.error(`[mcp v2.3] Tool execution failed for ${tool.name}:`, error);
       return {
         content: [{
           type: 'text',
@@ -246,6 +279,142 @@ export class MemoryToolHandler {
     };
   }
 
+  // ─── memory_recall v2.3 — synthesizing recall (mirrors neuralsync-query) ──
+
+  private async handleMemoryRecall(args: any): Promise<MCPToolResult> {
+    const question = args.question;
+    if (!question) {
+      throw new Error('Question parameter is required for memory recall');
+    }
+
+    const clientId = args.client_id || 'viralbrain';
+    const { answer, citations, sources } = await this.client.recallMemory(question, clientId);
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          question,
+          client_id: clientId,
+          answer,
+          citations,
+          sources,
+        }, null, 2),
+      }],
+    };
+  }
+
+  // ─── memory_get_recent v2.3 — ns_get_recent ──────────────────────────
+
+  private async handleMemoryGetRecent(args: any): Promise<MCPToolResult> {
+    const clientId = args.client_id || 'viralbrain';
+    const records = await this.client.getRecent(clientId, {
+      content_type: typeof args.content_type === 'string' ? args.content_type : undefined,
+      domain: typeof args.domain === 'string' ? args.domain : undefined,
+      since: typeof args.since === 'string' ? args.since : undefined,
+      limit: typeof args.limit === 'number' ? args.limit : undefined,
+    });
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          client_id: clientId,
+          results_count: Array.isArray(records) ? records.length : 0,
+          results: records,
+        }, null, 2),
+      }],
+    };
+  }
+
+  // ─── memory_get_latest_session v2.3 — ns_get_latest_session ──────────
+
+  private async handleMemoryGetLatestSession(args: any): Promise<MCPToolResult> {
+    const clientId = args.client_id || 'viralbrain';
+    const records = await this.client.getLatestSession(clientId);
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          client_id: clientId,
+          results: records,
+        }, null, 2),
+      }],
+    };
+  }
+
+  // ─── memory_get_by_session v2.3 — ns_get_by_session ──────────────────
+
+  private async handleMemoryGetBySession(args: any): Promise<MCPToolResult> {
+    const sessionNumber = args.session_number;
+    if (sessionNumber === undefined || sessionNumber === null) {
+      throw new Error('session_number parameter is required for memory_get_by_session');
+    }
+
+    const clientId = args.client_id || 'viralbrain';
+    const records = await this.client.getBySession(clientId, sessionNumber);
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          client_id: clientId,
+          session_number: sessionNumber,
+          results_count: Array.isArray(records) ? records.length : 0,
+          results: records,
+        }, null, 2),
+      }],
+    };
+  }
+
+  // ─── memory_filter v2.3 — ns_filter_records ──────────────────────────
+
+  private async handleMemoryFilter(args: any): Promise<MCPToolResult> {
+    const clientId = args.client_id || 'viralbrain';
+    const records = await this.client.filterRecords(clientId, {
+      content_type: typeof args.content_type === 'string' ? args.content_type : undefined,
+      domain: typeof args.domain === 'string' ? args.domain : undefined,
+      status: typeof args.status === 'string' ? args.status : undefined,
+      tags: Array.isArray(args.tags) ? args.tags : undefined,
+      attributes: args.attributes && typeof args.attributes === 'object' ? args.attributes : undefined,
+      title_ilike: typeof args.title_ilike === 'string' ? args.title_ilike : undefined,
+      body_ilike: typeof args.body_ilike === 'string' ? args.body_ilike : undefined,
+      since: typeof args.since === 'string' ? args.since : undefined,
+      until: typeof args.until === 'string' ? args.until : undefined,
+      order: typeof args.order === 'string' ? args.order : undefined,
+      limit: typeof args.limit === 'number' ? args.limit : undefined,
+    });
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          client_id: clientId,
+          results_count: Array.isArray(records) ? records.length : 0,
+          results: records,
+        }, null, 2),
+      }],
+    };
+  }
+
+  // ─── memory_current_session v2.3 — ns_current_session (bigint) ───────
+
+  private async handleMemoryCurrentSession(args: any): Promise<MCPToolResult> {
+    const clientId = args.client_id || 'viralbrain';
+    const sessionNumber = await this.client.currentSession(clientId);
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          client_id: clientId,
+          current_session: sessionNumber,
+        }, null, 2),
+      }],
+    };
+  }
+
   // ─── ChatGPT compat: search ──────────────────────────────────────────
 
   private async handleSearchWrapper(args: any): Promise<MCPToolResult> {
@@ -323,6 +492,13 @@ export class MemoryToolHandler {
 // ChatGPT's lenient one. Bare `items: { type: 'object' }` (the v2.1
 // shape) caused Anthropic to silently strip these arrays from outbound
 // JSON-RPC payloads.
+//
+// v2.3 NOTE: the six new read-only tools (memory_recall, memory_get_recent,
+// memory_get_latest_session, memory_get_by_session, memory_filter,
+// memory_current_session) follow the same rule. Every object/array-of-object
+// param (memory_filter.tags, memory_filter.attributes) carries explicit
+// items/properties + additionalProperties so strict validators do not strip
+// them. client_id is injected server-side and is NEVER in any `required`.
 
 export const MEMORY_TOOLS_SCHEMA = [
   {
@@ -546,6 +722,184 @@ export const MEMORY_TOOLS_SCHEMA = [
   {
     name: 'memory_stats',
     description: 'Get memory system statistics and health metrics for the client.',
+    annotations: {
+      readOnlyHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        client_id: {
+          type: 'string',
+          description: 'Client identifier (default: viralbrain)',
+          default: 'viralbrain',
+        },
+      },
+    },
+  },
+  // ─── S250 recall + retrieval tools (read-only, client_id server-injected) ──
+  {
+    name: 'memory_recall',
+    description: 'Synthesizing recall over the typed memory substrate (ns_records). Embeds the question (Voyage voyage-4-lite, FTS fallback), runs the recency-aware hybrid RPC, and synthesizes an answer (Anthropic Haiku) strictly from the returned records. Returns { answer, citations, sources }; answers "This is not yet in your IP store." when the substrate has no match. Mirrors the direct-path neuralsync-query function for cross-path parity.',
+    annotations: {
+      readOnlyHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: {
+          type: 'string',
+          description: 'Natural-language question to answer from NeuralSynch memory.',
+        },
+        client_id: {
+          type: 'string',
+          description: 'Client identifier (default: viralbrain)',
+          default: 'viralbrain',
+        },
+      },
+      required: ['question'],
+    },
+  },
+  {
+    name: 'memory_get_recent',
+    description: 'Get the most recent typed memory records (ns_records) for the client, newest first. Optional filters narrow to a content_type, domain, or records since a timestamp.',
+    annotations: {
+      readOnlyHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        content_type: {
+          type: 'string',
+          description: 'Filter to one content type (optional). E.g. decision, session_writeback, code_artifact, error, runbook.',
+        },
+        domain: {
+          type: 'string',
+          description: 'Filter to one domain (optional). E.g. neuralsynch.memory-architecture, farsight.predict.',
+        },
+        since: {
+          type: 'string',
+          description: 'ISO 8601 timestamp; only records created at or after this time (optional).',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of records (default: 20).',
+          default: 20,
+        },
+        client_id: {
+          type: 'string',
+          description: 'Client identifier (default: viralbrain)',
+          default: 'viralbrain',
+        },
+      },
+    },
+  },
+  {
+    name: 'memory_get_latest_session',
+    description: 'Get the latest session row for the client (highest session number, active by default).',
+    annotations: {
+      readOnlyHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        client_id: {
+          type: 'string',
+          description: 'Client identifier (default: viralbrain)',
+          default: 'viralbrain',
+        },
+      },
+    },
+  },
+  {
+    name: 'memory_get_by_session',
+    description: 'Get all typed memory records (ns_records) attached to a specific session number for the client.',
+    annotations: {
+      readOnlyHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_number: {
+          type: 'number',
+          description: 'Session number to retrieve records for.',
+        },
+        client_id: {
+          type: 'string',
+          description: 'Client identifier (default: viralbrain)',
+          default: 'viralbrain',
+        },
+      },
+      required: ['session_number'],
+    },
+  },
+  {
+    name: 'memory_filter',
+    description: 'Structured filter over typed memory records (ns_records). Combine content_type, domain, status, tags, JSON attributes, title/body ILIKE substrings, and a created-at window, then order and limit. All filters are optional.',
+    annotations: {
+      readOnlyHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        content_type: {
+          type: 'string',
+          description: 'Filter to one content type (optional).',
+        },
+        domain: {
+          type: 'string',
+          description: 'Filter to one domain (optional).',
+        },
+        status: {
+          type: 'string',
+          description: 'Filter to one status (optional). E.g. active, resolved, deprecated, superseded.',
+        },
+        tags: {
+          type: 'array',
+          description: 'Filter to records carrying all of these tags (optional).',
+          items: {
+            type: 'string',
+          },
+        },
+        attributes: {
+          type: 'object',
+          description: 'Filter by JSON attributes (optional). Free-form key/value object matched against the record attributes column.',
+          additionalProperties: true,
+        },
+        title_ilike: {
+          type: 'string',
+          description: 'Case-insensitive substring match against the record title (optional). Plain substring; no % wildcards needed.',
+        },
+        body_ilike: {
+          type: 'string',
+          description: 'Case-insensitive substring match against the record body (optional).',
+        },
+        since: {
+          type: 'string',
+          description: 'ISO 8601 timestamp; only records created at or after this time (optional).',
+        },
+        until: {
+          type: 'string',
+          description: 'ISO 8601 timestamp; only records created at or before this time (optional).',
+        },
+        order: {
+          type: 'string',
+          description: 'Ordering hint (optional). E.g. created_at.desc, created_at.asc.',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of records (optional).',
+        },
+        client_id: {
+          type: 'string',
+          description: 'Client identifier (default: viralbrain)',
+          default: 'viralbrain',
+        },
+      },
+    },
+  },
+  {
+    name: 'memory_current_session',
+    description: 'Get the current session number (bigint) for the client.',
     annotations: {
       readOnlyHint: true,
     },
