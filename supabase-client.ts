@@ -749,6 +749,37 @@ export class NeuralSynchClient {
     }
   }
 
+  // ─── Single record by id (S251) — full body, no excerpt ──────────────
+  //
+  // Returns the complete ns_records row, or null when no such row exists.
+  // null is a definitive negative and callers must surface it as one; the
+  // defect this replaces was an empty result presented as a successful read.
+  async getRecordById(recordId: string): Promise<any | null> {
+    try {
+      const url = `${this.baseUrl}/rest/v1/ns_records` +
+        `?id=eq.${encodeURIComponent(recordId)}` +
+        `&select=id,title,body,content_type,domain,status,session_number,tags,attributes,created_at,client_id` +
+        `&limit=1`;
+      const res = await fetch(url, {
+        headers: {
+          // service_role — RLS gates ns_records against anon.
+          'Authorization': `Bearer ${this.serviceKey}`,
+          'apikey': this.serviceKey,
+        },
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`ns_records fetch ${res.status}: ${text}`);
+      }
+      const rows = await res.json();
+      if (!Array.isArray(rows) || rows.length === 0) return null;
+      return rows[0];
+    } catch (error) {
+      console.error('[mcp v3.5] Record fetch by id failed:', error);
+      throw new Error(`Failed to fetch ns_records row: ${(error as Error).message}`);
+    }
+  }
+
   // ─── Memory stats (fixed table reference) ────────────────────────────
   async getMemoryStats(clientId: string = 'viralbrain'): Promise<any> {
     try {

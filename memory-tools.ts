@@ -70,6 +70,18 @@
 //   4. Stats — surfaces ns_records count alongside legacy memory_records.
 
 import { NeuralSynchClient, type SessionWriteback } from './supabase-client.ts';
+import { CustodyToolHandler, CUSTODY_TOOLS_SCHEMA } from './custody-tools.ts';
+
+// Canonical UUID shape. Used to tell an ns_records record id apart from a
+// client_id in the `fetch` tool. Anchored at both ends — a client_id that
+// merely contains a UUID is not a record id.
+const RECORD_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** True when `id` is an ns_records record UUID rather than a client_id. */
+export function isRecordId(id: unknown): boolean {
+  return typeof id === 'string' && RECORD_ID_RE.test(id.trim());
+}
 
 export interface MCPToolCall {
   name: string;
@@ -86,9 +98,11 @@ export interface MCPToolResult {
 
 export class MemoryToolHandler {
   private client: NeuralSynchClient;
+  private custody: CustodyToolHandler;
 
   constructor() {
     this.client = new NeuralSynchClient();
+    this.custody = new CustodyToolHandler();
   }
 
   async handleToolCall(tool: MCPToolCall): Promise<MCPToolResult> {
@@ -118,6 +132,18 @@ export class MemoryToolHandler {
           return await this.handleSearchWrapper(tool.arguments);
         case 'fetch':
           return await this.handleFetchWrapper(tool.arguments);
+        // ─── S251 additive: full-record retrieval ───────────────────────
+        case 'get_record_by_id':
+          return await this.handleGetRecordById(tool.arguments);
+        // ─── S251 additive: artifact custody surface ────────────────────
+        case 'custody_resolve_alias':
+          return await this.custody.handleResolveAlias(tool.arguments);
+        case 'custody_get_metadata':
+          return await this.custody.handleGetMetadata(tool.arguments);
+        case 'custody_retrieve':
+          return await this.custody.handleRetrieve(tool.arguments);
+        case 'custody_verify':
+          return await this.custody.handleVerify(tool.arguments);
         default:
           throw new Error(`Unknown tool: ${tool.name}`);
       }
@@ -447,9 +473,85 @@ export class MemoryToolHandler {
     };
   }
 
+  // ─── S251 additive: get_record_by_id ─────────────────────────────────
+  //
+  // Returns ONE complete ns_records row including the full body. `search`
+  // returns record ids; before this there was no tool that could turn one of
+  // those ids back into the whole document.
+
+  private async handleGetRecordById(args: any): Promise<MCPToolResult> {
+    const recordId = typeof args?.record_id === 'string' ? args.record_id.trim() : '';
+    if (!recordId) {
+      throw new Error('record_id is required for get_record_by_id');
+    }
+    if (!isRecordId(recordId)) {
+      throw new Error(
+        `record_id must be an ns_records UUID; received "${recordId}". ` +
+          'If you meant to read a client memory packet, call memory_read with client_id instead.',
+      );
+    }
+
+    const record = await this.client.getRecordById(recordId);
+
+    if (!record) {
+      // Fail closed and say so plainly. Returning an empty-looking success here
+      // is the exact defect this tool exists to remove.
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            found: false,
+            record_id: recordId,
+            error: 'RECORD_NOT_FOUND',
+            detail:
+              `No ns_records row exists with id ${recordId}. This is a definitive negative, not an empty substrate.`,
+          }, null, 2),
+        }],
+        isError: true,
+      };
+    }
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          found: true,
+          id: record.id,
+          title: record.title,
+          content_type: record.content_type,
+          domain: record.domain,
+          status: record.status,
+          session_number: record.session_number,
+          client_id: record.client_id,
+          tags: record.tags,
+          attributes: record.attributes,
+          created_at: record.created_at,
+          body: record.body,
+          truncated: false,
+        }, null, 2),
+      }],
+    };
+  }
+
   // ─── ChatGPT compat: fetch ───────────────────────────────────────────
+  //
+  // S251 CORRECTION. Previously this treated `args.id` as a client_id
+  // unconditionally. Given a real ns_records UUID it found no such client and
+  // returned a confident, well-formatted, EMPTY packet ("No locked decisions
+  // found", "No active records in ns_records yet") with no error — it failed
+  // OPEN. A Master AI asking for a known-good record was told the substrate was
+  // empty. Deep Research convention is that `search` returns ids and `fetch`
+  // retrieves that document, so a UUID must resolve to a record.
+  //
+  // Behaviour now:
+  //   id is a UUID      → return that ns_records record (or RECORD_NOT_FOUND)
+  //   id is anything else → original client_id memory-packet behaviour, unchanged
 
   private async handleFetchWrapper(args: any): Promise<MCPToolResult> {
+    if (isRecordId(args?.id)) {
+      return await this.handleGetRecordById({ record_id: String(args.id).trim() });
+    }
+
     const clientId = args.id || args.client_id || 'viralbrain';
     const context = await this.client.readMemoryPacket(clientId);
 
@@ -967,4 +1069,42 @@ export const MEMORY_TOOLS_SCHEMA = [
       required: ['id'],
     },
   },
+];
+
+// ═══════════════════════════════════════════════════════════════════════
+// S251 ADDITIVE SCHEMAS
+// ═══════════════════════════════════════════════════════════════════════
+// MEMORY_TOOLS_SCHEMA above is left byte-for-byte unchanged so the original
+// twelve tools are provably untouched. New tools are declared in separate
+// arrays and joined into ALL_TOOLS_SCHEMA, which is what the server advertises.
+
+export const RECORD_TOOLS_SCHEMA = [
+  {
+    name: 'get_record_by_id',
+    description:
+      'Retrieve ONE complete NeuralSynch memory record (ns_records) by its record UUID, including the FULL body — not an excerpt and not a summary. Use this after `search` returns a record id and you need the whole document, for example an operating runbook. Returns a definitive RECORD_NOT_FOUND error if the id does not exist, never an empty-looking success.',
+    annotations: {
+      readOnlyHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        record_id: {
+          type: 'string',
+          description: 'ns_records record UUID (as returned in the id field by `search`)',
+        },
+      },
+      required: ['record_id'],
+    },
+  },
+];
+
+/**
+ * The complete advertised tool surface: the original 12 memory tools, plus
+ * full-record retrieval, plus the 4 read-only artifact-custody tools. 17 total.
+ */
+export const ALL_TOOLS_SCHEMA = [
+  ...MEMORY_TOOLS_SCHEMA,
+  ...RECORD_TOOLS_SCHEMA,
+  ...CUSTODY_TOOLS_SCHEMA,
 ];

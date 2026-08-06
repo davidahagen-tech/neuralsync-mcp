@@ -22,7 +22,15 @@
 //   removed" rather than reverting to v1 directly, so the deploy log
 //   carries an explicit cleanup version separate from the original v1.
 
-import { MemoryToolHandler, MEMORY_TOOLS_SCHEMA } from './memory-tools.ts';
+// CHANGES IN v1.3.0 (S251 bounded custody exposure):
+//   1. Advertises ALL_TOOLS_SCHEMA (17 tools) instead of MEMORY_TOOLS_SCHEMA
+//      (12 tools). The original 12 entries are unchanged and still come from
+//      MEMORY_TOOLS_SCHEMA; ALL_TOOLS_SCHEMA appends get_record_by_id and the
+//      four read-only custody tools.
+//   2. serverInfo.version 1.2.0 -> 1.3.0.
+//   No transport, CORS, SSE, session or well-known behaviour was touched.
+
+import { MemoryToolHandler, ALL_TOOLS_SCHEMA } from './memory-tools.ts';
 
 export interface MCPRequest {
   jsonrpc: string;
@@ -47,7 +55,7 @@ export class MCPServer {
   private sessionId: string;
   private serverInfo = {
     name: 'neuralsynch-memory',
-    version: '1.2.0',
+    version: '1.3.0',
     description: 'NeuralSynch Memory Packet system for Claude anti-amnesia',
     author: 'Ascension 1 Capital LLC',
     capabilities: {
@@ -115,7 +123,7 @@ export class MCPServer {
       jsonrpc: '2.0',
       id: request.id,
       result: {
-        tools: MEMORY_TOOLS_SCHEMA
+        tools: ALL_TOOLS_SCHEMA
       }
     };
   }
@@ -257,7 +265,7 @@ export class MCPServer {
       return new Response(
         JSON.stringify({
           server: this.serverInfo,
-          tools: MEMORY_TOOLS_SCHEMA,
+          tools: ALL_TOOLS_SCHEMA,
           status: 'ready',
           protocol: 'MCP 2024-11-05',
           transport: 'streamable-http',
