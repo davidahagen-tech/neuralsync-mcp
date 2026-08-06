@@ -208,6 +208,8 @@ export class CustodyToolHandler {
           media_type: r.media_type,
           original_filename: r.original_filename,
           safe_filename: r.safe_filename,
+          logical_project_path: r.logical_project_path,
+          classification: r.classification,
           custody_state: r.custody_state,
           created_by: r.created_by,
           created_through: r.created_through,

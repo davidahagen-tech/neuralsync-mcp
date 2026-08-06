@@ -253,12 +253,21 @@ Deno.test('custody_get_metadata returns metadata and no bytes', async () => {
   Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
   const stub = stubFetch({
     ok: true,
-    result: { id: 'v1', sha256: 'abc', byte_length: 10, custody_state: 'CUSTODIED' },
+    result: {
+      id: 'v1',
+      sha256: 'abc',
+      byte_length: 10,
+      logical_project_path: 'handoffs/demo.zip',
+      classification: 'APPROVED_HANDOFF',
+      custody_state: 'CUSTODIED',
+    },
   });
   try {
     const out = await new CustodyToolHandler().handleGetMetadata({ version_id: 'v1' });
     const parsed = JSON.parse(out.content[0].text);
     assertEquals(parsed.version_id, 'v1');
+    assertEquals(parsed.logical_project_path, 'handoffs/demo.zip');
+    assertEquals(parsed.classification, 'APPROVED_HANDOFF');
     assert(!('content_base64' in parsed), 'metadata must not return bytes');
   } finally {
     stub.restore();
