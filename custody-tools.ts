@@ -405,8 +405,10 @@ export class CustodyToolHandler {
           created_through: r.created_through,
           verified_at: r.verified_at,
           temporary_object_removed: r.temporary_object_removed,
+          signed_retrieval_url: r.signed_retrieval_url,
+          retrieval_expires_at: r.retrieval_expires_at,
           note:
-            'The backend reauthorized the pending scope, read and hashed the uploaded bytes, compared SHA-256 and length, created a new immutable permanent version, read it back and verified it again. Only custody_state CUSTODIED is success.',
+            'The backend reauthorized the pending scope, read and hashed the uploaded bytes, compared SHA-256 and length, created a new immutable permanent version, read it back and verified it again. Only custody_state CUSTODIED is success. Download selected bytes directly from signed_retrieval_url before retrieval_expires_at; never log, persist, commit or report that URL.',
         }, null, 2),
       }],
     };
