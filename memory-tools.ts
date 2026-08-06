@@ -147,6 +147,10 @@ export class MemoryToolHandler {
         // ─── S252 additive: governed custody writes + extended reads ────
         case 'custody_store':
           return await this.custody.handleStore(tool.arguments);
+        case 'custody_begin_upload':
+          return await this.custody.handleBeginUpload(tool.arguments);
+        case 'custody_finalize_upload':
+          return await this.custody.handleFinalizeUpload(tool.arguments);
         case 'custody_set_alias':
           return await this.custody.handleSetAlias(tool.arguments);
         case 'custody_list_versions':
@@ -1118,8 +1122,8 @@ export const RECORD_TOOLS_SCHEMA = [
 
 /**
  * The complete advertised tool surface: the original 12 memory tools, plus
- * full-record retrieval, plus the 12 artifact-custody tools (4 read-only from
- * S251 and 8 governed write/read tools from S252). 25 total.
+ * full-record retrieval, plus the 14 artifact-custody tools (4 read-only from
+ * S251, 8 governed write/read tools from S252 and 2 direct-upload tools). 27 total.
  */
 export const ALL_TOOLS_SCHEMA = [
   ...MEMORY_TOOLS_SCHEMA,

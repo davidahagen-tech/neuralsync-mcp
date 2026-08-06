@@ -11,13 +11,13 @@ import { MCPServer } from '../mcp-protocol.ts';
 import { MEMORY_TOOLS_SCHEMA } from '../memory-tools.ts';
 import { CUSTODY_KEY_ENV } from '../custody-tools.ts';
 
-Deno.test('tools/list advertises exactly 25 tools over JSON-RPC', async () => {
+Deno.test('tools/list advertises exactly 27 tools over JSON-RPC', async () => {
   const res: any = await new MCPServer().handleRequest({
     jsonrpc: '2.0',
     id: 1,
     method: 'tools/list',
   });
-  assertEquals(res.result.tools.length, 25);
+  assertEquals(res.result.tools.length, 27);
 });
 
 Deno.test('tools/list still carries the original 12 first, unmodified', async () => {
@@ -53,6 +53,8 @@ Deno.test('tools/list includes the S251 and S252 custody tool names', async () =
       'custody_verify',
       // S252 governed custody
       'custody_store',
+      'custody_begin_upload',
+      'custody_finalize_upload',
       'custody_set_alias',
       'custody_list_versions',
       'custody_add_dependency',
@@ -76,13 +78,13 @@ Deno.test('initialize reports version 1.3.0', async () => {
   assertEquals(res.result.serverInfo.name, 'neuralsynch-memory');
 });
 
-Deno.test('GET / discovery document lists all 25 tools', async () => {
+Deno.test('GET / discovery document lists all 27 tools', async () => {
   const res = await new MCPServer().handleHTTP(
     new Request('https://example.test/', { method: 'GET' }),
   );
   const body = await res.json();
   assertEquals(res.status, 200);
-  assertEquals(body.tools.length, 25);
+  assertEquals(body.tools.length, 27);
   assertEquals(body.server.version, '1.3.0');
 });
 
@@ -110,5 +112,5 @@ Deno.test('no custody key is required to LIST tools — only to call them', asyn
     id: 1,
     method: 'tools/list',
   });
-  assertEquals(res.result.tools.length, 25);
+  assertEquals(res.result.tools.length, 27);
 });

@@ -79,6 +79,7 @@ const NS_DEP_TYPES = new Set([
 // fails CLOSED with a clear message rather than a false "stored" result or a
 // false multipart claim.
 const NS_MAX_BASE64_CHARS = 8 * 1024 * 1024; // 8 MB of base64 text
+const NS_MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 export interface CustodyToolResult {
   content: Array<{ type: 'text'; text: string }>;
@@ -318,6 +319,94 @@ export class CustodyToolHandler {
           verified_at: r.verified_at,
           note:
             'IMMUTABLE version created. The backend wrote the bytes, read them back and re-hashed them server-side; custody_state CUSTODIED means the read-back SHA-256 and byte length matched what was sent. Storing the same artifact_name again creates a NEW version — it NEVER overwrites existing bytes. Recompute the SHA-256 from your source bytes and confirm it equals the returned sha256 before treating this as preserved.',
+        }, null, 2),
+      }],
+    };
+  }
+
+  // ─── custody_begin_upload (write, metadata only) ─────────────────────
+  async handleBeginUpload(args: any): Promise<CustodyToolResult> {
+    for (const f of ['project', 'artifact_name', 'filename', 'expected_sha256', 'media_type']) {
+      if (!args?.[f] || typeof args[f] !== 'string') {
+        throw new Error(`${f} is required for custody_begin_upload`);
+      }
+    }
+    if (!/^[0-9a-f]{64}$/.test(args.expected_sha256)) {
+      throw new Error('expected_sha256 must be 64 lowercase hexadecimal characters for custody_begin_upload');
+    }
+    if (!Number.isSafeInteger(args.expected_byte_length) || args.expected_byte_length <= 0 || args.expected_byte_length > NS_MAX_UPLOAD_BYTES) {
+      throw new Error(`expected_byte_length must be an integer from 1 to ${NS_MAX_UPLOAD_BYTES} for custody_begin_upload`);
+    }
+    if (args.filename === '.' || args.filename === '..' || /[\\/\u0000\r\n]/.test(args.filename)) {
+      throw new Error('filename must be a single traversal-free file name for custody_begin_upload');
+    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$/.test(args.media_type)) {
+      throw new Error('media_type is invalid for custody_begin_upload');
+    }
+    if (args.logical_project_path && (typeof args.logical_project_path !== 'string' || args.logical_project_path.startsWith('/') || /^[A-Za-z]:/.test(args.logical_project_path) || args.logical_project_path.replace(/\\/g, '/').split('/').includes('..'))) {
+      throw new Error('logical_project_path must be relative and traversal-free for custody_begin_upload');
+    }
+    if (args.classification !== undefined && (typeof args.classification !== 'string' || args.classification.length === 0 || args.classification.length > 100 || /[\u0000\r\n]/.test(args.classification))) {
+      throw new Error('classification must be a non-empty string of at most 100 characters for custody_begin_upload');
+    }
+    const created_through = args.created_through ?? NS_DEFAULT_PROVENANCE;
+    if (!NS_ALLOWED_PROVENANCE.has(created_through)) {
+      throw new Error(`created_through must be one of ${[...NS_ALLOWED_PROVENANCE].join(', ')}`);
+    }
+    const r = await custodyCall('begin_upload', {
+      client_id: args.client_id || NS_DEFAULT_CLIENT,
+      project: args.project,
+      artifact_name: args.artifact_name,
+      filename: args.filename,
+      expected_sha256: args.expected_sha256,
+      expected_byte_length: args.expected_byte_length,
+      media_type: args.media_type,
+      created_through,
+      ...(args.logical_project_path ? { logical_project_path: args.logical_project_path } : {}),
+      ...(args.classification ? { classification: args.classification } : {}),
+    });
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          upload_id: r.upload_id,
+          signed_upload_url: r.signed_upload_url,
+          method: r.method,
+          headers: r.headers,
+          application_expires_at: r.application_expires_at,
+          expected_sha256: r.expected_sha256,
+          expected_byte_length: r.expected_byte_length,
+          instruction:
+            'Immediately PUT the local file bytes to signed_upload_url using exactly the returned headers, without base64 encoding. The application finalization window is 15 minutes. Never log, persist, reuse, commit or report the signed URL.',
+        }, null, 2),
+      }],
+    };
+  }
+
+  // ─── custody_finalize_upload (write, exactly once) ────────────────────
+  async handleFinalizeUpload(args: any): Promise<CustodyToolResult> {
+    if (!args?.upload_id || typeof args.upload_id !== 'string') {
+      throw new Error('upload_id is required for custody_finalize_upload');
+    }
+    const r = await custodyCall('finalize_upload', { upload_id: args.upload_id });
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          artifact_id: r.artifact_id,
+          version_id: r.version_id,
+          sha256: r.sha256,
+          byte_length: r.byte_length,
+          filename: r.filename,
+          media_type: r.media_type,
+          logical_project_path: r.logical_project_path,
+          classification: r.classification,
+          custody_state: r.custody_state,
+          created_through: r.created_through,
+          verified_at: r.verified_at,
+          temporary_object_removed: r.temporary_object_removed,
+          note:
+            'The backend reauthorized the pending scope, read and hashed the uploaded bytes, compared SHA-256 and length, created a new immutable permanent version, read it back and verified it again. Only custody_state CUSTODIED is success.',
         }, null, 2),
       }],
     };
@@ -636,6 +725,84 @@ export const CUSTODY_TOOLS_SCHEMA = [
         },
       },
       required: ['project', 'artifact_name', 'filename', 'content_base64'],
+    },
+  },
+  {
+    name: 'custody_begin_upload',
+    description:
+      'Begin a governed direct upload using METADATA ONLY. Authorizes the server-held principal for client_id/project, records the expected SHA-256 and byte length, creates a unique private pending path and returns a short-lived signed PUT URL plus the exact headers. File bytes must travel directly from local disk to Supabase Storage, never as model-generated base64. The application finalization window is 15 minutes; the signed URL/token must never be logged, persisted, committed or reported.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        client_id: {
+          type: 'string',
+          description: 'Client identifier (default: neuralsynch)',
+          default: NS_DEFAULT_CLIENT,
+        },
+        project: {
+          type: 'string',
+          description: 'Authorized custody project, e.g. publishing-studio',
+        },
+        artifact_name: {
+          type: 'string',
+          description: 'Logical artifact name; finalization creates a new immutable version',
+        },
+        filename: {
+          type: 'string',
+          description: 'Single original file name; paths and traversal are rejected',
+        },
+        expected_sha256: {
+          type: 'string',
+          description: 'Required 64-character lowercase SHA-256 of the local file',
+        },
+        expected_byte_length: {
+          type: 'integer',
+          description: 'Required local file byte length, from 1 through 104857600',
+          minimum: 1,
+          maximum: 104857600,
+        },
+        media_type: {
+          type: 'string',
+          description: 'File media type, e.g. application/zip',
+        },
+        created_through: {
+          type: 'string',
+          description: 'Provenance label (default: claude-app)',
+          default: NS_DEFAULT_PROVENANCE,
+        },
+        logical_project_path: {
+          type: 'string',
+          description: 'Optional relative logical project path; never used as the storage path',
+        },
+        classification: {
+          type: 'string',
+          description: 'Optional existing artifact classification or status label to preserve in the authoritative catalog',
+        },
+      },
+      required: ['project', 'artifact_name', 'filename', 'expected_sha256', 'expected_byte_length', 'media_type'],
+    },
+  },
+  {
+    name: 'custody_finalize_upload',
+    description:
+      'Finalize one governed pending upload exactly once. Reauthorizes its original client/project/principal, rejects expired or replayed uploads, reads and hashes the pending object server-side, compares SHA-256 and byte length, promotes verified bytes into a new immutable permanent version, reads it back and verifies it again, then marks it CUSTODIED. Hash or length mismatches fail closed and remove the pending object. No alias can target the version before successful finalization.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        upload_id: {
+          type: 'string',
+          description: 'Pending upload UUID returned by custody_begin_upload',
+        },
+      },
+      required: ['upload_id'],
     },
   },
   {

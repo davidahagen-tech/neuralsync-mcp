@@ -440,6 +440,116 @@ Deno.test('custody_store fails closed above the 8 MB base64 limit with no false 
   }
 });
 
+Deno.test('custody_begin_upload validates metadata and delegates to begin_upload without file bytes', async () => {
+  clearKeys();
+  Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
+  const stub = stubFetch({
+    ok: true,
+    result: {
+      upload_id: '11111111-1111-4111-8111-111111111111',
+      signed_upload_url: 'https://example.test/storage/v1/object/upload/sign/ns-artifacts/path?token=transient',
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/zip', 'x-upsert': 'false' },
+      application_expires_at: '2026-08-06T19:00:00Z',
+      expected_sha256: 'a'.repeat(64),
+      expected_byte_length: 123,
+    },
+  });
+  try {
+    const out = await new CustodyToolHandler().handleBeginUpload({
+      project: 'publishing-studio',
+      artifact_name: 'demo',
+      filename: 'demo.zip',
+      expected_sha256: 'a'.repeat(64),
+      expected_byte_length: 123,
+      media_type: 'application/zip',
+      logical_project_path: 'handoffs/demo.zip',
+      classification: 'APPROVED_HANDOFF',
+    });
+    const sent = sentOp(stub.calls[0].init);
+    assertEquals(sent.op, 'begin_upload');
+    assertEquals(sent.args.client_id, 'neuralsynch');
+    assertEquals(sent.args.created_through, 'claude-app');
+    assertEquals(sent.args.expected_byte_length, 123);
+    assertEquals(sent.args.logical_project_path, 'handoffs/demo.zip');
+    assertEquals(sent.args.classification, 'APPROVED_HANDOFF');
+    assert(!('content_base64' in sent.args), 'begin_upload carried file bytes');
+    const parsed = JSON.parse(out.content[0].text);
+    assertEquals(parsed.method, 'PUT');
+    assertEquals(parsed.upload_id, '11111111-1111-4111-8111-111111111111');
+  } finally {
+    stub.restore();
+    clearKeys();
+  }
+});
+
+Deno.test('custody_begin_upload rejects bad hash, length and traversal before any network call', async () => {
+  clearKeys();
+  Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
+  const stub = stubFetch({ ok: true, result: {} });
+  const h = new CustodyToolHandler();
+  const base = { project: 'publishing-studio', artifact_name: 'demo', filename: 'demo.zip', expected_sha256: 'a'.repeat(64), expected_byte_length: 123, media_type: 'application/zip' };
+  try {
+    await assertRejects(() => h.handleBeginUpload({ ...base, expected_sha256: 'bad' }), Error, 'expected_sha256');
+    await assertRejects(() => h.handleBeginUpload({ ...base, expected_byte_length: 104857601 }), Error, 'expected_byte_length');
+    await assertRejects(() => h.handleBeginUpload({ ...base, filename: '../demo.zip' }), Error, 'traversal-free');
+    await assertRejects(() => h.handleBeginUpload({ ...base, logical_project_path: '../secret' }), Error, 'logical_project_path');
+    await assertRejects(() => h.handleBeginUpload({ ...base, classification: 'bad\nclassification' }), Error, 'classification');
+    assertEquals(stub.calls.length, 0, 'invalid begin_upload metadata reached the backend');
+  } finally {
+    stub.restore();
+    clearKeys();
+  }
+});
+
+Deno.test('custody_finalize_upload delegates only the pending upload id and returns custody proof', async () => {
+  clearKeys();
+  Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
+  const stub = stubFetch({
+    ok: true,
+    result: {
+      artifact_id: 'a1',
+      version_id: 'v1',
+      sha256: 'a'.repeat(64),
+      byte_length: 123,
+      filename: 'demo.zip',
+      media_type: 'application/zip',
+      custody_state: 'CUSTODIED',
+      created_through: 'claude-app',
+      verified_at: '2026-08-06T19:00:00Z',
+      temporary_object_removed: true,
+    },
+  });
+  try {
+    const out = await new CustodyToolHandler().handleFinalizeUpload({ upload_id: '11111111-1111-4111-8111-111111111111' });
+    const sent = sentOp(stub.calls[0].init);
+    assertEquals(sent.op, 'finalize_upload');
+    assertEquals(sent.args, { upload_id: '11111111-1111-4111-8111-111111111111' });
+    const parsed = JSON.parse(out.content[0].text);
+    assertEquals(parsed.custody_state, 'CUSTODIED');
+    assertEquals(parsed.temporary_object_removed, true);
+  } finally {
+    stub.restore();
+    clearKeys();
+  }
+});
+
+Deno.test('custody_finalize_upload surfaces typed backend errors verbatim', async () => {
+  clearKeys();
+  Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
+  const stub = stubFetch({ ok: false, error: { code: 'UPLOAD_HASH_MISMATCH', detail: 'uploaded bytes do not match expected_sha256' } }, 409);
+  try {
+    const err = await assertRejects(
+      () => new CustodyToolHandler().handleFinalizeUpload({ upload_id: '11111111-1111-4111-8111-111111111111' }),
+      Error,
+    );
+    assertStringIncludes(err.message, 'UPLOAD_HASH_MISMATCH');
+  } finally {
+    stub.restore();
+    clearKeys();
+  }
+});
+
 Deno.test('custody_set_alias delegates to set_alias and surfaces ALIAS_TARGET_MISSING verbatim', async () => {
   clearKeys();
   Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
@@ -584,6 +694,8 @@ Deno.test('every S252 handler rejects missing required arguments before any netw
   Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
   const h = new CustodyToolHandler();
   await assertRejects(() => h.handleStore({}), Error, 'is required for custody_store');
+  await assertRejects(() => h.handleBeginUpload({}), Error, 'is required for custody_begin_upload');
+  await assertRejects(() => h.handleFinalizeUpload({}), Error, 'upload_id is required');
   await assertRejects(() => h.handleSetAlias({}), Error, 'is required for custody_set_alias');
   await assertRejects(() => h.handleListVersions({}), Error, 'is required for custody_list_versions');
   await assertRejects(() => h.handleAddDependency({}), Error, 'is required for custody_add_dependency');

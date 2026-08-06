@@ -29,16 +29,18 @@ const ORIGINAL_12 = [
   'fetch',
 ];
 
-// The 13 tools that follow the original 12, in advertised order: record
+// The 15 tools that follow the original 12, in advertised order: record
 // retrieval, the 4 read-only custody tools (S251), then the 8 governed custody
 // tools (S252).
-const POST_MEMORY_13 = [
+const POST_MEMORY_15 = [
   'get_record_by_id',
   'custody_resolve_alias',
   'custody_get_metadata',
   'custody_retrieve',
   'custody_verify',
   'custody_store',
+  'custody_begin_upload',
+  'custody_finalize_upload',
   'custody_set_alias',
   'custody_list_versions',
   'custody_add_dependency',
@@ -66,10 +68,10 @@ Deno.test('the original 12 memory tools are still exactly 12', () => {
   assertEquals(MEMORY_TOOLS_SCHEMA.map((t: any) => t.name), ORIGINAL_12);
 });
 
-Deno.test('total advertised tool count is 25', () => {
-  assertEquals(ALL_TOOLS_SCHEMA.length, 25);
-  assertEquals(MEMORY_TOOLS_SCHEMA.length + RECORD_TOOLS_SCHEMA.length + CUSTODY_TOOLS_SCHEMA.length, 25);
-  assertEquals(CUSTODY_TOOLS_SCHEMA.length, 12);
+Deno.test('total advertised tool count is 27', () => {
+  assertEquals(ALL_TOOLS_SCHEMA.length, 27);
+  assertEquals(MEMORY_TOOLS_SCHEMA.length + RECORD_TOOLS_SCHEMA.length + CUSTODY_TOOLS_SCHEMA.length, 27);
+  assertEquals(CUSTODY_TOOLS_SCHEMA.length, 14);
 });
 
 Deno.test('original 12 occupy the first 12 slots and are deep-equal, unmodified', () => {
@@ -82,8 +84,8 @@ Deno.test('original 12 occupy the first 12 slots and are deep-equal, unmodified'
   }
 });
 
-Deno.test('the 13 non-memory tools are present, after the original 12, in order', () => {
-  assertEquals(ALL_TOOLS_SCHEMA.slice(12).map((t: any) => t.name), POST_MEMORY_13);
+Deno.test('the 15 non-memory tools are present, after the original 12, in order', () => {
+  assertEquals(ALL_TOOLS_SCHEMA.slice(12).map((t: any) => t.name), POST_MEMORY_15);
 });
 
 Deno.test('no duplicate tool names', () => {
