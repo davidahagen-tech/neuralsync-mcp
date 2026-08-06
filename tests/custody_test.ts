@@ -322,3 +322,274 @@ Deno.test('custody handlers reject missing required arguments before any network
   await assertRejects(() => h.handleVerify({}), Error, 'version_id is required');
   clearKeys();
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// S252 — governed writes + extended reads. Offline: fetch is stubbed, the op
+// and args sent to the backend are captured and asserted, and no real key is
+// used. These prove the MCP surface DELEGATES to the correct backend wire op
+// with the correct arguments — they do not re-test backend policy.
+// ═══════════════════════════════════════════════════════════════════════
+
+/** The wire op + args the handler sent to the backend, from a stubbed call. */
+function sentOp(init: RequestInit): { op: string; args: any } {
+  return JSON.parse(String(init.body));
+}
+
+Deno.test('custody_store delegates to the store op and defaults provenance to claude-app', async () => {
+  clearKeys();
+  Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
+  const stub = stubFetch({
+    ok: true,
+    result: {
+      artifact_id: 'a1',
+      version_id: 'v1',
+      sha256: 'a'.repeat(64),
+      byte_length: 3,
+      media_type: 'application/zip',
+      custody_state: 'CUSTODIED',
+      verified_at: '2026-08-06T00:00:00Z',
+    },
+  });
+  try {
+    const out = await new CustodyToolHandler().handleStore({
+      project: 'publishing-studio',
+      artifact_name: 'demo',
+      filename: 'demo.zip',
+      content_base64: 'YWJj',
+    });
+    const { op, args } = sentOp(stub.calls[0].init);
+    assertEquals(op, 'store');
+    assertEquals(args.project, 'publishing-studio');
+    assertEquals(args.client_id, 'neuralsynch');
+    assertEquals(args.created_through, 'claude-app');
+    const parsed = JSON.parse(out.content[0].text);
+    assertEquals(parsed.version_id, 'v1');
+    assertEquals(parsed.custody_state, 'CUSTODIED');
+    assert(!out.content[0].text.includes(FAKE_KEY), 'key leaked into tool result');
+  } finally {
+    stub.restore();
+    clearKeys();
+  }
+});
+
+Deno.test('custody_store honours an explicit compatible provenance', async () => {
+  clearKeys();
+  Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
+  const stub = stubFetch({ ok: true, result: { version_id: 'v2', custody_state: 'CUSTODIED' } });
+  try {
+    await new CustodyToolHandler().handleStore({
+      project: 'publishing-studio',
+      artifact_name: 'demo',
+      filename: 'demo.zip',
+      content_base64: 'YWJj',
+      created_through: 'studio',
+    });
+    assertEquals(sentOp(stub.calls[0].init).args.created_through, 'studio');
+  } finally {
+    stub.restore();
+    clearKeys();
+  }
+});
+
+Deno.test('custody_store rejects an unrecognised provenance without a network call', async () => {
+  clearKeys();
+  Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
+  const stub = stubFetch({ ok: true, result: {} });
+  try {
+    await assertRejects(
+      () =>
+        new CustodyToolHandler().handleStore({
+          project: 'publishing-studio',
+          artifact_name: 'demo',
+          filename: 'demo.zip',
+          content_base64: 'YWJj',
+          created_through: 'rogue-agent',
+        }),
+      Error,
+      'created_through must be one of',
+    );
+    assertEquals(stub.calls.length, 0, 'a store request was sent with bad provenance');
+  } finally {
+    stub.restore();
+    clearKeys();
+  }
+});
+
+Deno.test('custody_store fails closed above the 8 MB base64 limit with no false multipart claim', async () => {
+  clearKeys();
+  Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
+  const stub = stubFetch({ ok: true, result: {} });
+  try {
+    const tooBig = 'A'.repeat(8 * 1024 * 1024 + 8);
+    const err = await assertRejects(
+      () =>
+        new CustodyToolHandler().handleStore({
+          project: 'publishing-studio',
+          artifact_name: 'big',
+          filename: 'big.zip',
+          content_base64: tooBig,
+        }),
+      Error,
+    );
+    assertStringIncludes(err.message, 'PAYLOAD_TOO_LARGE');
+    assertStringIncludes(err.message, 'multipart is NOT implemented');
+    assertEquals(stub.calls.length, 0, 'oversized payload was sent to the backend');
+  } finally {
+    stub.restore();
+    clearKeys();
+  }
+});
+
+Deno.test('custody_set_alias delegates to set_alias and surfaces ALIAS_TARGET_MISSING verbatim', async () => {
+  clearKeys();
+  Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
+  const ok = stubFetch({ ok: true, result: { alias: 'project:publishing-studio/current-handoff', version_id: 'v1', ok: true } });
+  try {
+    const out = await new CustodyToolHandler().handleSetAlias({
+      project: 'publishing-studio',
+      alias: 'project:publishing-studio/current-handoff',
+      version_id: 'v1',
+    });
+    assertEquals(sentOp(ok.calls[0].init).op, 'set_alias');
+    assertEquals(JSON.parse(out.content[0].text).ok, true);
+  } finally {
+    ok.restore();
+  }
+  const bad = stubFetch({ ok: false, error: { code: 'ALIAS_TARGET_MISSING', detail: 'no such version' } });
+  try {
+    const err = await assertRejects(
+      () => new CustodyToolHandler().handleSetAlias({ project: 'p', alias: 'a', version_id: 'nope' }),
+      Error,
+    );
+    assertStringIncludes(err.message, 'ALIAS_TARGET_MISSING');
+  } finally {
+    bad.restore();
+    clearKeys();
+  }
+});
+
+Deno.test('custody_list_versions delegates to list_versions and returns history', async () => {
+  clearKeys();
+  Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
+  const stub = stubFetch({
+    ok: true,
+    result: { artifact_name: 'demo', versions: [{ id: 'v1' }, { id: 'v2' }] },
+  });
+  try {
+    const out = await new CustodyToolHandler().handleListVersions({ project: 'publishing-studio', artifact_name: 'demo' });
+    assertEquals(sentOp(stub.calls[0].init).op, 'list_versions');
+    assertEquals(JSON.parse(out.content[0].text).versions.length, 2);
+  } finally {
+    stub.restore();
+    clearKeys();
+  }
+});
+
+Deno.test('custody_add_dependency validates the fixed dep_type vocabulary before any network call', async () => {
+  clearKeys();
+  Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
+  const stub = stubFetch({ ok: true, result: { ok: true } });
+  try {
+    await assertRejects(
+      () => new CustodyToolHandler().handleAddDependency({ from_version_id: 'a', to_version_id: 'b', dep_type: 'INVENTED' }),
+      Error,
+      'dep_type must be one of',
+    );
+    assertEquals(stub.calls.length, 0, 'an invalid dep_type reached the backend');
+
+    await new CustodyToolHandler().handleAddDependency({ from_version_id: 'a', to_version_id: 'b', dep_type: 'PACKAGES' });
+    const { op, args } = sentOp(stub.calls[0].init);
+    assertEquals(op, 'add_dependency');
+    assertEquals(args.dep_type, 'PACKAGES');
+  } finally {
+    stub.restore();
+    clearKeys();
+  }
+});
+
+Deno.test('custody_dependency_closure delegates and reports members and missing ids', async () => {
+  clearKeys();
+  Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
+  const stub = stubFetch({
+    ok: true,
+    result: { root: 'r', members: [{ id: 'r' }, { id: 'c' }], missing_version_ids: ['x'] },
+  });
+  try {
+    const out = await new CustodyToolHandler().handleDependencyClosure({ root_version_id: 'r' });
+    assertEquals(sentOp(stub.calls[0].init).op, 'dependency_closure');
+    const parsed = JSON.parse(out.content[0].text);
+    assertEquals(parsed.members.length, 2);
+    assertEquals(parsed.missing_version_ids, ['x']);
+  } finally {
+    stub.restore();
+    clearKeys();
+  }
+});
+
+Deno.test('custody_export_session delegates and returns a base64 package with a completeness flag', async () => {
+  clearKeys();
+  Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
+  const stub = stubFetch({
+    ok: true,
+    result: { export_id: 'e1', sha256: 'b'.repeat(64), byte_length: 42, complete: true, missing: [], content_base64: 'UEsFBg==' },
+  });
+  try {
+    const out = await new CustodyToolHandler().handleExportSession({ root_version_id: 'r' });
+    assertEquals(sentOp(stub.calls[0].init).op, 'export_session');
+    const parsed = JSON.parse(out.content[0].text);
+    assertEquals(parsed.encoding, 'base64');
+    assertEquals(parsed.complete, true);
+    assertEquals(parsed.content_base64, 'UEsFBg==');
+  } finally {
+    stub.restore();
+    clearKeys();
+  }
+});
+
+Deno.test('custody_scan_archive delegates and surfaces the inventory summary', async () => {
+  clearKeys();
+  Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
+  const stub = stubFetch({
+    ok: true,
+    result: { archive_version_id: 'v1', entry_count: 5, unsafe_entries: 0, duplicate_entries: 0, encrypted_present: false, unsupported_present: false, nested_archives: 1, entries: [] },
+  });
+  try {
+    const out = await new CustodyToolHandler().handleScanArchive({ version_id: 'v1' });
+    assertEquals(sentOp(stub.calls[0].init).op, 'scan_archive');
+    const parsed = JSON.parse(out.content[0].text);
+    assertEquals(parsed.entry_count, 5);
+    assertEquals(parsed.nested_archives, 1);
+  } finally {
+    stub.restore();
+    clearKeys();
+  }
+});
+
+Deno.test('custody_report_missing delegates and returns the live status', async () => {
+  clearKeys();
+  Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
+  const stub = stubFetch({ ok: true, result: { version_id: 'v1', status: 'ARTIFACT_BYTES_MISSING', object_key: 'k' } });
+  try {
+    const out = await new CustodyToolHandler().handleReportMissing({ version_id: 'v1' });
+    assertEquals(sentOp(stub.calls[0].init).op, 'report_missing');
+    assertEquals(JSON.parse(out.content[0].text).status, 'ARTIFACT_BYTES_MISSING');
+  } finally {
+    stub.restore();
+    clearKeys();
+  }
+});
+
+Deno.test('every S252 handler rejects missing required arguments before any network call', async () => {
+  clearKeys();
+  Deno.env.set(CUSTODY_KEY_ENV, FAKE_KEY);
+  const h = new CustodyToolHandler();
+  await assertRejects(() => h.handleStore({}), Error, 'is required for custody_store');
+  await assertRejects(() => h.handleSetAlias({}), Error, 'is required for custody_set_alias');
+  await assertRejects(() => h.handleListVersions({}), Error, 'is required for custody_list_versions');
+  await assertRejects(() => h.handleAddDependency({}), Error, 'is required for custody_add_dependency');
+  await assertRejects(() => h.handleDependencyClosure({}), Error, 'root_version_id is required');
+  await assertRejects(() => h.handleExportSession({}), Error, 'root_version_id is required');
+  await assertRejects(() => h.handleScanArchive({}), Error, 'version_id is required');
+  await assertRejects(() => h.handleReportMissing({}), Error, 'version_id is required');
+  clearKeys();
+});

@@ -144,6 +144,23 @@ export class MemoryToolHandler {
           return await this.custody.handleRetrieve(tool.arguments);
         case 'custody_verify':
           return await this.custody.handleVerify(tool.arguments);
+        // ─── S252 additive: governed custody writes + extended reads ────
+        case 'custody_store':
+          return await this.custody.handleStore(tool.arguments);
+        case 'custody_set_alias':
+          return await this.custody.handleSetAlias(tool.arguments);
+        case 'custody_list_versions':
+          return await this.custody.handleListVersions(tool.arguments);
+        case 'custody_add_dependency':
+          return await this.custody.handleAddDependency(tool.arguments);
+        case 'custody_dependency_closure':
+          return await this.custody.handleDependencyClosure(tool.arguments);
+        case 'custody_export_session':
+          return await this.custody.handleExportSession(tool.arguments);
+        case 'custody_scan_archive':
+          return await this.custody.handleScanArchive(tool.arguments);
+        case 'custody_report_missing':
+          return await this.custody.handleReportMissing(tool.arguments);
         default:
           throw new Error(`Unknown tool: ${tool.name}`);
       }
@@ -1101,7 +1118,8 @@ export const RECORD_TOOLS_SCHEMA = [
 
 /**
  * The complete advertised tool surface: the original 12 memory tools, plus
- * full-record retrieval, plus the 4 read-only artifact-custody tools. 17 total.
+ * full-record retrieval, plus the 12 artifact-custody tools (4 read-only from
+ * S251 and 8 governed write/read tools from S252). 25 total.
  */
 export const ALL_TOOLS_SCHEMA = [
   ...MEMORY_TOOLS_SCHEMA,

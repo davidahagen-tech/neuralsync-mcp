@@ -36,6 +36,50 @@ export const CUSTODY_ENDPOINT =
 const NS_DEFAULT_CLIENT = 'neuralsynch';
 const NS_DEFAULT_PROJECT = 'neuralsynch-custody';
 
+// ─── S252 governed-write provenance ───────────────────────────────────────
+// This exposure exists so Claude App/Cowork can perform GOVERNED custody
+// writes, so a write from this surface is stamped 'claude-app' by default. The
+// other four values are preserved for the Master-AI surfaces that share this
+// custody backend. created_through is an HONEST provenance LABEL on the version
+// row; it does NOT set the authenticated principal. The backend derives the
+// principal (created_by) from the server-held custody key via
+// ns_artifact_agent_keys, and authorises the write against
+// ns_artifact_memberships(client_id, project, principal). This shared MCP
+// service credential cannot cryptographically distinguish the calling agent, so
+// we never forge a per-agent principal — we record the surface that made the
+// call and leave created_by to the backend. Authorisation stays fully
+// server-side and fail-closed.
+const NS_DEFAULT_PROVENANCE = 'claude-app';
+const NS_ALLOWED_PROVENANCE = new Set([
+  'claude-app',
+  'claude-code',
+  'chatgpt',
+  'studio',
+  'website',
+]);
+
+// The custody backend's dependency edge vocabulary is a FIXED set (enforced by
+// a CHECK constraint on ns_artifact_dependencies.dep_type). We validate at the
+// MCP layer so an invalid type fails before any network call, with a message
+// that names the permitted set — never inventing a type.
+const NS_DEP_TYPES = new Set([
+  'CONTAINS',
+  'DEPENDS_ON',
+  'GENERATED_FROM',
+  'SUPERSEDES',
+  'DOCUMENTS',
+  'VERIFIES',
+  'PACKAGES',
+  'REFERENCES',
+]);
+
+// Single-shot base64 ceiling. The custody backend stores a whole artifact in
+// one base64 body; there is deliberately NO multipart path on this surface (the
+// D-5 multipart design is not implemented here). A payload above this limit
+// fails CLOSED with a clear message rather than a false "stored" result or a
+// false multipart claim.
+const NS_MAX_BASE64_CHARS = 8 * 1024 * 1024; // 8 MB of base64 text
+
 export interface CustodyToolResult {
   content: Array<{ type: 'text'; text: string }>;
   isError?: boolean;
@@ -222,6 +266,240 @@ export class CustodyToolHandler {
       }],
     };
   }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // S252 — GOVERNED WRITES + EXTENDED READS (custody wire ops store,
+  // set_alias, list_versions, add_dependency, dependency_closure,
+  // export_session, scan_archive, report_missing). Each delegates to the
+  // already-deployed backend op of the same name; none re-implements policy.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // ─── custody_store (write) ───────────────────────────────────────────
+  async handleStore(args: any): Promise<CustodyToolResult> {
+    for (const f of ['project', 'artifact_name', 'filename', 'content_base64']) {
+      if (!args?.[f] || typeof args[f] !== 'string') {
+        throw new Error(`${f} is required for custody_store`);
+      }
+    }
+    const created_through = args.created_through ?? NS_DEFAULT_PROVENANCE;
+    if (!NS_ALLOWED_PROVENANCE.has(created_through)) {
+      throw new Error(
+        `created_through must be one of ${[...NS_ALLOWED_PROVENANCE].join(', ')} — ` +
+          `refusing to stamp an unrecognised provenance on a custody version`,
+      );
+    }
+    if (args.content_base64.length > NS_MAX_BASE64_CHARS) {
+      throw new Error(
+        `PAYLOAD_TOO_LARGE: content_base64 is ${args.content_base64.length} characters, ` +
+          `over the ${NS_MAX_BASE64_CHARS}-character (8 MB) single-shot limit. This surface ` +
+          `stores an artifact in one base64 body; multipart is NOT implemented here. ` +
+          `The store was NOT attempted — no bytes were sent.`,
+      );
+    }
+    const r = await custodyCall('store', {
+      client_id: args.client_id || NS_DEFAULT_CLIENT,
+      project: args.project,
+      artifact_name: args.artifact_name,
+      filename: args.filename,
+      content_base64: args.content_base64,
+      created_through,
+    });
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          artifact_id: r.artifact_id,
+          version_id: r.version_id,
+          sha256: r.sha256,
+          byte_length: r.byte_length,
+          media_type: r.media_type,
+          custody_state: r.custody_state,
+          created_through,
+          verified_at: r.verified_at,
+          note:
+            'IMMUTABLE version created. The backend wrote the bytes, read them back and re-hashed them server-side; custody_state CUSTODIED means the read-back SHA-256 and byte length matched what was sent. Storing the same artifact_name again creates a NEW version — it NEVER overwrites existing bytes. Recompute the SHA-256 from your source bytes and confirm it equals the returned sha256 before treating this as preserved.',
+        }, null, 2),
+      }],
+    };
+  }
+
+  // ─── custody_set_alias (write) ───────────────────────────────────────
+  async handleSetAlias(args: any): Promise<CustodyToolResult> {
+    for (const f of ['project', 'alias', 'version_id']) {
+      if (!args?.[f] || typeof args[f] !== 'string') {
+        throw new Error(`${f} is required for custody_set_alias`);
+      }
+    }
+    const r = await custodyCall('set_alias', {
+      client_id: args.client_id || NS_DEFAULT_CLIENT,
+      project: args.project,
+      alias: args.alias,
+      version_id: args.version_id,
+    });
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          alias: r.alias,
+          version_id: r.version_id,
+          ok: r.ok === true,
+          note:
+            'Alias now points to this immutable version. An alias may only target a version that exists in the SAME client_id/project — otherwise it fails ALIAS_TARGET_MISSING. Re-pointing an existing alias records an auditable event and updates the pointer only; it never mutates or deletes any stored bytes.',
+        }, null, 2),
+      }],
+    };
+  }
+
+  // ─── custody_list_versions (read) ────────────────────────────────────
+  async handleListVersions(args: any): Promise<CustodyToolResult> {
+    for (const f of ['project', 'artifact_name']) {
+      if (!args?.[f] || typeof args[f] !== 'string') {
+        throw new Error(`${f} is required for custody_list_versions`);
+      }
+    }
+    const r = await custodyCall('list_versions', {
+      client_id: args.client_id || NS_DEFAULT_CLIENT,
+      project: args.project,
+      artifact_name: args.artifact_name,
+    });
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          artifact_name: r.artifact_name,
+          versions: r.versions,
+          note:
+            'Immutable version history for this artifact_name within the project, oldest first. Each version is a distinct set of bytes; nothing here is ever overwritten.',
+        }, null, 2),
+      }],
+    };
+  }
+
+  // ─── custody_add_dependency (write) ──────────────────────────────────
+  async handleAddDependency(args: any): Promise<CustodyToolResult> {
+    for (const f of ['from_version_id', 'to_version_id', 'dep_type']) {
+      if (!args?.[f] || typeof args[f] !== 'string') {
+        throw new Error(`${f} is required for custody_add_dependency`);
+      }
+    }
+    if (!NS_DEP_TYPES.has(args.dep_type)) {
+      throw new Error(
+        `dep_type must be one of ${[...NS_DEP_TYPES].join(', ')} — ` +
+          `this vocabulary is fixed by the backend; do not invent a type`,
+      );
+    }
+    const r = await custodyCall('add_dependency', {
+      from_version_id: args.from_version_id,
+      to_version_id: args.to_version_id,
+      dep_type: args.dep_type,
+    });
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: r.ok === true,
+          from_version_id: args.from_version_id,
+          to_version_id: args.to_version_id,
+          dep_type: args.dep_type,
+          note:
+            'Directed dependency edge recorded (from → to). The target version must already exist or the call fails DEPENDENCY_MISSING. Edges are additive and auditable; re-adding an identical edge is a no-op.',
+        }, null, 2),
+      }],
+    };
+  }
+
+  // ─── custody_dependency_closure (read) ───────────────────────────────
+  async handleDependencyClosure(args: any): Promise<CustodyToolResult> {
+    if (!args?.root_version_id || typeof args.root_version_id !== 'string') {
+      throw new Error('root_version_id is required for custody_dependency_closure');
+    }
+    const r = await custodyCall('dependency_closure', {
+      root_version_id: args.root_version_id,
+    });
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          root: r.root,
+          members: r.members,
+          missing_version_ids: r.missing_version_ids,
+          note:
+            'Complete transitive dependency graph reachable from the root version. missing_version_ids lists referenced versions whose rows are absent — anything listed there must be recovered before the set is considered complete.',
+        }, null, 2),
+      }],
+    };
+  }
+
+  // ─── custody_export_session (write — creates an export record) ───────
+  async handleExportSession(args: any): Promise<CustodyToolResult> {
+    if (!args?.root_version_id || typeof args.root_version_id !== 'string') {
+      throw new Error('root_version_id is required for custody_export_session');
+    }
+    const r = await custodyCall('export_session', {
+      root_version_id: args.root_version_id,
+    });
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          export_id: r.export_id,
+          sha256: r.sha256,
+          byte_length: r.byte_length,
+          complete: r.complete === true,
+          missing: r.missing,
+          encoding: 'base64',
+          content_base64: r.content_base64,
+          instruction:
+            'This is a self-contained ZIP of the dependency closure plus MANIFEST.json and SHA256SUMS.txt. Decode content_base64, extract it, and re-hash every member against MANIFEST.json. complete=false or a non-empty missing[] means the closure could not be fully reconstructed — treat it as incomplete, not preserved.',
+        }, null, 2),
+      }],
+    };
+  }
+
+  // ─── custody_scan_archive (write — records archive entries) ──────────
+  async handleScanArchive(args: any): Promise<CustodyToolResult> {
+    if (!args?.version_id || typeof args.version_id !== 'string') {
+      throw new Error('version_id is required for custody_scan_archive');
+    }
+    const r = await custodyCall('scan_archive', { version_id: args.version_id });
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          archive_version_id: r.archive_version_id,
+          entry_count: r.entry_count,
+          unsafe_entries: r.unsafe_entries,
+          duplicate_entries: r.duplicate_entries,
+          encrypted_present: r.encrypted_present,
+          unsupported_present: r.unsupported_present,
+          nested_archives: r.nested_archives,
+          entries: r.entries,
+          note:
+            'ZIP central-directory inventory only. It identifies nested archives, unsafe/absolute/traversal paths, duplicates and encrypted entries, but does NOT recurse into nested archives and does NOT compute per-entry hashes (entry_sha256 is null). Only store and deflate compression are treated as supported. At most 200 entries are returned inline.',
+        }, null, 2),
+      }],
+    };
+  }
+
+  // ─── custody_report_missing (read) ───────────────────────────────────
+  async handleReportMissing(args: any): Promise<CustodyToolResult> {
+    if (!args?.version_id || typeof args.version_id !== 'string') {
+      throw new Error('version_id is required for custody_report_missing');
+    }
+    const r = await custodyCall('report_missing', { version_id: args.version_id });
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          version_id: r.version_id,
+          status: r.status,
+          object_key: r.object_key,
+          note:
+            'status is the live custody state: CUSTODIED means the bytes are present and their SHA-256 still matches; ARTIFACT_NOT_FOUND, ARTIFACT_BYTES_MISSING or ARTIFACT_HASH_MISMATCH each name a specific fail-closed condition. Use this to detect absent or corrupted dependencies without transferring any payload.',
+        }, null, 2),
+      }],
+    };
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -313,6 +591,218 @@ export const CUSTODY_TOOLS_SCHEMA = [
         version_id: {
           type: 'string',
           description: 'Custody artifact version UUID',
+        },
+      },
+      required: ['version_id'],
+    },
+  },
+  // ─── S252 governed-write + extended-read custody tools ────────────────
+  {
+    name: 'custody_store',
+    description:
+      'Store the ACTUAL BYTES of an artifact as a new IMMUTABLE custody version, scoped to a client_id/project. The bytes are sent base64-encoded (single-shot, 8 MB base64 max — there is no multipart path). The backend computes the SHA-256 and byte length server-side, reads the object back and re-hashes it; only a matching read-back reaches custody_state CUSTODIED, otherwise it fails closed (VERIFICATION_FAILURE) and no partial success is reported. Storing the same artifact_name again creates a NEW version and never overwrites existing bytes. Authorisation is enforced server-side against project membership using the server-held custody credential; the caller never sends a key. created_through records provenance (default claude-app).',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        client_id: {
+          type: 'string',
+          description: 'Client identifier (default: neuralsynch)',
+          default: NS_DEFAULT_CLIENT,
+        },
+        project: {
+          type: 'string',
+          description: 'Project scope the write is authorised against, e.g. publishing-studio',
+        },
+        artifact_name: {
+          type: 'string',
+          description: 'Logical artifact name; storing the same name again adds a new immutable version',
+        },
+        filename: {
+          type: 'string',
+          description: 'Original filename; used to derive the safe filename and media type',
+        },
+        content_base64: {
+          type: 'string',
+          description: 'The artifact bytes, base64-encoded. Max 8 MB of base64 text; larger payloads fail closed (no multipart).',
+        },
+        created_through: {
+          type: 'string',
+          description: 'Provenance label for this version: claude-app (default), claude-code, chatgpt, studio or website',
+          default: NS_DEFAULT_PROVENANCE,
+        },
+      },
+      required: ['project', 'artifact_name', 'filename', 'content_base64'],
+    },
+  },
+  {
+    name: 'custody_set_alias',
+    description:
+      'Point a stable custody alias at an immutable version within a client_id/project. The target version must already exist in the same client_id/project or the call fails ALIAS_TARGET_MISSING. Re-pointing an existing alias records an auditable event and moves the pointer only — it never mutates or deletes stored bytes. Requires a write-capable project role, enforced server-side.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        client_id: {
+          type: 'string',
+          description: 'Client identifier (default: neuralsynch)',
+          default: NS_DEFAULT_CLIENT,
+        },
+        project: {
+          type: 'string',
+          description: 'Project scope, e.g. publishing-studio',
+        },
+        alias: {
+          type: 'string',
+          description: 'The alias to set, e.g. project:publishing-studio/current-handoff',
+        },
+        version_id: {
+          type: 'string',
+          description: 'The immutable version UUID the alias should resolve to',
+        },
+      },
+      required: ['project', 'alias', 'version_id'],
+    },
+  },
+  {
+    name: 'custody_list_versions',
+    description:
+      'List the immutable version history of one artifact_name within a client_id/project, oldest first, with sha256, byte_length, custody_state, created_at and created_by for each. Read-only. Fails ARTIFACT_NOT_FOUND if the artifact_name has no versions in that project.',
+    annotations: {
+      readOnlyHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        client_id: {
+          type: 'string',
+          description: 'Client identifier (default: neuralsynch)',
+          default: NS_DEFAULT_CLIENT,
+        },
+        project: {
+          type: 'string',
+          description: 'Project scope, e.g. publishing-studio',
+        },
+        artifact_name: {
+          type: 'string',
+          description: 'Logical artifact name to list versions for',
+        },
+      },
+      required: ['project', 'artifact_name'],
+    },
+  },
+  {
+    name: 'custody_add_dependency',
+    description:
+      'Record a directed, auditable dependency edge between two immutable versions (from → to). dep_type is a FIXED vocabulary: CONTAINS, DEPENDS_ON, GENERATED_FROM, SUPERSEDES, DOCUMENTS, VERIFIES, PACKAGES, REFERENCES. The target version must already exist or the call fails DEPENDENCY_MISSING. Edges are additive; re-adding an identical edge is a no-op. Requires a write-capable project role, enforced server-side against the from-version’s project.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        from_version_id: {
+          type: 'string',
+          description: 'Source version UUID (the dependent)',
+        },
+        to_version_id: {
+          type: 'string',
+          description: 'Target version UUID (the dependency); must already exist',
+        },
+        dep_type: {
+          type: 'string',
+          description: 'One of: CONTAINS, DEPENDS_ON, GENERATED_FROM, SUPERSEDES, DOCUMENTS, VERIFIES, PACKAGES, REFERENCES',
+          enum: [
+            'CONTAINS',
+            'DEPENDS_ON',
+            'GENERATED_FROM',
+            'SUPERSEDES',
+            'DOCUMENTS',
+            'VERIFIES',
+            'PACKAGES',
+            'REFERENCES',
+          ],
+        },
+      },
+      required: ['from_version_id', 'to_version_id', 'dep_type'],
+    },
+  },
+  {
+    name: 'custody_dependency_closure',
+    description:
+      'Return the complete transitive dependency graph reachable from a root version: every member version plus missing_version_ids for any referenced version whose row is absent. Read-only. Use it to prove a continuation set is complete before relying on it — anything in missing_version_ids must be recovered first.',
+    annotations: {
+      readOnlyHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        root_version_id: {
+          type: 'string',
+          description: 'The version UUID to compute the dependency closure from',
+        },
+      },
+      required: ['root_version_id'],
+    },
+  },
+  {
+    name: 'custody_export_session',
+    description:
+      'Export the dependency closure of a root version as a single self-contained ZIP (base64) containing every retrievable member plus MANIFEST.json and SHA256SUMS.txt, and record an export row. Each member is re-verified during export; complete=false or a non-empty missing[] means the closure could not be fully reconstructed. Intended to reconstruct a continuation set in a fresh session. Requires an export-capable project role, enforced server-side.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        root_version_id: {
+          type: 'string',
+          description: 'The version UUID whose dependency closure should be exported',
+        },
+      },
+      required: ['root_version_id'],
+    },
+  },
+  {
+    name: 'custody_scan_archive',
+    description:
+      'Inventory a stored ZIP artifact from its central directory and record the entries. Reports entry_count, nested_archives, unsafe (absolute/traversal) paths, duplicates, encrypted entries and unsupported compression. LIMITATIONS: it does NOT recurse into nested archives, does NOT compute per-entry hashes, treats only store/deflate as supported, and returns at most 200 entries inline. Fails ARCHIVE_UNSUPPORTED or ARCHIVE_LIMIT_EXCEEDED on malformed or oversized archives.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        version_id: {
+          type: 'string',
+          description: 'Custody artifact version UUID of the ZIP to scan',
+        },
+      },
+      required: ['version_id'],
+    },
+  },
+  {
+    name: 'custody_report_missing',
+    description:
+      'Report the live custody status of a version without transferring the payload: CUSTODIED (bytes present and SHA-256 matches), or a typed condition — ARTIFACT_NOT_FOUND, ARTIFACT_BYTES_MISSING or ARTIFACT_HASH_MISMATCH. Read-only. Use it to detect absent or corrupted dependencies before a handoff.',
+    annotations: {
+      readOnlyHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        version_id: {
+          type: 'string',
+          description: 'Custody artifact version UUID to check',
         },
       },
       required: ['version_id'],

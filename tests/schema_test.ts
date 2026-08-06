@@ -29,22 +29,47 @@ const ORIGINAL_12 = [
   'fetch',
 ];
 
-const NEW_5 = [
+// The 13 tools that follow the original 12, in advertised order: record
+// retrieval, the 4 read-only custody tools (S251), then the 8 governed custody
+// tools (S252).
+const POST_MEMORY_13 = [
   'get_record_by_id',
   'custody_resolve_alias',
   'custody_get_metadata',
   'custody_retrieve',
   'custody_verify',
+  'custody_store',
+  'custody_set_alias',
+  'custody_list_versions',
+  'custody_add_dependency',
+  'custody_dependency_closure',
+  'custody_export_session',
+  'custody_scan_archive',
+  'custody_report_missing',
 ];
+
+// Of the post-memory tools, these are read-only; the rest perform governed
+// writes and must NOT advertise readOnlyHint: true.
+const READ_ONLY_TOOLS = new Set([
+  'get_record_by_id',
+  'custody_resolve_alias',
+  'custody_get_metadata',
+  'custody_retrieve',
+  'custody_verify',
+  'custody_list_versions',
+  'custody_dependency_closure',
+  'custody_report_missing',
+]);
 
 Deno.test('the original 12 memory tools are still exactly 12', () => {
   assertEquals(MEMORY_TOOLS_SCHEMA.length, 12);
   assertEquals(MEMORY_TOOLS_SCHEMA.map((t: any) => t.name), ORIGINAL_12);
 });
 
-Deno.test('total advertised tool count is 17', () => {
-  assertEquals(ALL_TOOLS_SCHEMA.length, 17);
-  assertEquals(MEMORY_TOOLS_SCHEMA.length + RECORD_TOOLS_SCHEMA.length + CUSTODY_TOOLS_SCHEMA.length, 17);
+Deno.test('total advertised tool count is 25', () => {
+  assertEquals(ALL_TOOLS_SCHEMA.length, 25);
+  assertEquals(MEMORY_TOOLS_SCHEMA.length + RECORD_TOOLS_SCHEMA.length + CUSTODY_TOOLS_SCHEMA.length, 25);
+  assertEquals(CUSTODY_TOOLS_SCHEMA.length, 12);
 });
 
 Deno.test('original 12 occupy the first 12 slots and are deep-equal, unmodified', () => {
@@ -57,8 +82,8 @@ Deno.test('original 12 occupy the first 12 slots and are deep-equal, unmodified'
   }
 });
 
-Deno.test('the 5 new tools are present, after the original 12', () => {
-  assertEquals(ALL_TOOLS_SCHEMA.slice(12).map((t: any) => t.name), NEW_5);
+Deno.test('the 13 non-memory tools are present, after the original 12, in order', () => {
+  assertEquals(ALL_TOOLS_SCHEMA.slice(12).map((t: any) => t.name), POST_MEMORY_13);
 });
 
 Deno.test('no duplicate tool names', () => {
@@ -100,10 +125,19 @@ Deno.test('new tools name every required param in their properties', () => {
   }
 });
 
-Deno.test('all 5 new tools are marked read-only', () => {
-  // Nothing added here can write, store, delete or supersede an artifact.
+Deno.test('read tools are read-only and governed-write tools are not', () => {
+  // The read tools must advertise readOnlyHint: true so clients do not prompt;
+  // the governed-write tools (store, set_alias, add_dependency, export_session,
+  // scan_archive) must NOT claim to be read-only.
   for (const t of ALL_TOOLS_SCHEMA.slice(12) as any[]) {
-    assertEquals(t.annotations?.readOnlyHint, true, `${t.name} is not readOnlyHint: true`);
+    if (READ_ONLY_TOOLS.has(t.name)) {
+      assertEquals(t.annotations?.readOnlyHint, true, `${t.name} should be readOnlyHint: true`);
+    } else {
+      assert(
+        t.annotations?.readOnlyHint !== true,
+        `${t.name} is a write tool but advertises readOnlyHint: true`,
+      );
+    }
   }
 });
 
