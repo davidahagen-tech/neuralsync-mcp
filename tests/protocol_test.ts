@@ -145,6 +145,36 @@ Deno.test("OAuth consent route is additive and does not expose server credential
   }
 });
 
+Deno.test("password recovery route is staging-only and does not expose server credentials", async () => {
+  const priorUrl = Deno.env.get("SUPABASE_URL");
+  const priorAnon = Deno.env.get("SUPABASE_ANON_KEY");
+  const priorService = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  Deno.env.set("SUPABASE_URL", "https://staging.example.test");
+  Deno.env.set("SUPABASE_ANON_KEY", "public-test-key");
+  Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "must-not-escape");
+  try {
+    const res = await new MCPServer().handleHTTP(
+      new Request("https://mcp.example.test/auth/reset-password"),
+    );
+    const html = await res.text();
+    assertEquals(res.status, 200);
+    assertEquals(res.headers.get("Cache-Control"), "no-store");
+    assert(html.includes("Set NeuralSynch staging password"));
+    assert(html.includes("https://staging.example.test"));
+    assert(!html.includes("must-not-escape"));
+  } finally {
+    priorUrl === undefined
+      ? Deno.env.delete("SUPABASE_URL")
+      : Deno.env.set("SUPABASE_URL", priorUrl);
+    priorAnon === undefined
+      ? Deno.env.delete("SUPABASE_ANON_KEY")
+      : Deno.env.set("SUPABASE_ANON_KEY", priorAnon);
+    priorService === undefined
+      ? Deno.env.delete("SUPABASE_SERVICE_ROLE_KEY")
+      : Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", priorService);
+  }
+});
+
 Deno.test("unchanged transport behaviour: OPTIONS preflight and unknown method", async () => {
   const server = new MCPServer();
 

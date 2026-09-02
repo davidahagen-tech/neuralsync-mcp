@@ -39,6 +39,7 @@ import {
   type MCPPrincipal,
 } from "./auth.ts";
 import { oauthConsentResponse } from "./oauth-consent.ts";
+import { passwordRecoveryResponse } from "./password-recovery.ts";
 
 export interface MCPRequest {
   jsonrpc: string;
@@ -232,6 +233,10 @@ export class MCPServer {
 
     if (request.method === "GET" && url.pathname === "/oauth/consent") {
       return oauthConsentResponse();
+    }
+
+    if (request.method === "GET" && url.pathname === "/auth/reset-password") {
+      return passwordRecoveryResponse();
     }
 
     if (request.method === "GET" && url.pathname === "/health") {
