@@ -131,10 +131,40 @@ export interface SessionWriteback {
   client_id: string;
   objective: string;
   outcome_summary: string;
-  files_created?: Array<{ path?: string; file_path?: string; description?: string; type?: string; language?: string }>;
-  files_modified?: Array<{ path?: string; file_path?: string; description?: string; changes?: string; type?: string; language?: string }>;
-  decisions_made?: Array<{ decision?: string; title?: string; rationale: string; type?: string; decision_type?: string; priority?: number; confidence_score?: number; platform?: string }>;
-  blockers_encountered?: Array<{ title: string; description: string; status?: string; error_type?: string }>;
+  files_created?: Array<
+    {
+      path?: string;
+      file_path?: string;
+      description?: string;
+      type?: string;
+      language?: string;
+    }
+  >;
+  files_modified?: Array<
+    {
+      path?: string;
+      file_path?: string;
+      description?: string;
+      changes?: string;
+      type?: string;
+      language?: string;
+    }
+  >;
+  decisions_made?: Array<
+    {
+      decision?: string;
+      title?: string;
+      rationale: string;
+      type?: string;
+      decision_type?: string;
+      priority?: number;
+      confidence_score?: number;
+      platform?: string;
+    }
+  >;
+  blockers_encountered?: Array<
+    { title: string; description: string; status?: string; error_type?: string }
+  >;
   next_session_tasks?: any[];
   handoff_prompt?: string;
   carry_forward_context?: string;
@@ -184,20 +214,20 @@ const EMBED_CACHE = new Map<string, { embedding: number[]; expires: number }>();
 const EMBED_TTL_MS = 5 * 60 * 1000;
 
 // ─── Voyage AI configuration (S173 — Decision 10 alignment) ─────────────
-const VOYAGE_API_URL    = 'https://api.voyageai.com/v1/embeddings';
-const VOYAGE_MODEL      = 'voyage-4-lite';
-const VOYAGE_INPUT_TYPE = 'query';
-const VOYAGE_DIM        = 1024;
+const VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings";
+const VOYAGE_MODEL = "voyage-4-lite";
+const VOYAGE_INPUT_TYPE = "query";
+const VOYAGE_DIM = 1024;
 
 // ─── Anthropic synthesis configuration (S250 — recall parity) ───────────
-const ANTHROPIC_API_URL    = 'https://api.anthropic.com/v1/messages';
-const ANTHROPIC_MODEL      = 'claude-haiku-4-5-20251001';
-const ANTHROPIC_VERSION    = '2023-06-01';
+const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
+const ANTHROPIC_VERSION = "2023-06-01";
 const ANTHROPIC_MAX_TOKENS = 600;
 const RECALL_EMBED_TIMEOUT_MS = 3000;
 
 async function getCachedEmbedding(query: string): Promise<number[] | null> {
-  const apiKey = Deno.env.get('VOYAGE_API_KEY_NEURALSYNCH');
+  const apiKey = Deno.env.get("VOYAGE_API_KEY_NEURALSYNCH");
   if (!apiKey) {
     return null;
   }
@@ -208,38 +238,44 @@ async function getCachedEmbedding(query: string): Promise<number[] | null> {
   }
   try {
     const res = await fetch(VOYAGE_API_URL, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        input:      [query],
-        model:      VOYAGE_MODEL,
+        input: [query],
+        model: VOYAGE_MODEL,
         input_type: VOYAGE_INPUT_TYPE,
       }),
     });
     if (!res.ok) {
-      console.error(`[mcp v3.4] Voyage embedding ${res.status}: ${await res.text()}`);
+      console.error(
+        `[mcp v3.4] Voyage embedding ${res.status}: ${await res.text()}`,
+      );
       return null;
     }
     const data = await res.json();
     const embedding = data?.data?.[0]?.embedding;
     if (!Array.isArray(embedding)) {
-      console.error('[mcp v3.4] Voyage embedding response missing data[0].embedding');
+      console.error(
+        "[mcp v3.4] Voyage embedding response missing data[0].embedding",
+      );
       return null;
     }
     if (embedding.length !== VOYAGE_DIM) {
       console.error(
         `[mcp v3.4] Voyage embedding dimension mismatch: expected ${VOYAGE_DIM}, ` +
-        `got ${embedding.length}. Wrong model string? Falling back to FTS-only.`,
+          `got ${embedding.length}. Wrong model string? Falling back to FTS-only.`,
       );
       return null;
     }
     EMBED_CACHE.set(query, { embedding, expires: now + EMBED_TTL_MS });
     return embedding;
   } catch (err) {
-    console.error(`[mcp v3.4] Voyage embedding error: ${(err as Error).message}`);
+    console.error(
+      `[mcp v3.4] Voyage embedding error: ${(err as Error).message}`,
+    );
     return null;
   }
 }
@@ -250,7 +286,7 @@ async function getCachedEmbedding(query: string): Promise<number[] | null> {
 // caller silently degrades to FTS-only. Not cached (kept separate from
 // getCachedEmbedding so the existing hybrid-search path is untouched).
 async function embedQuery(question: string): Promise<number[] | null> {
-  const apiKey = Deno.env.get('VOYAGE_API_KEY_NEURALSYNCH');
+  const apiKey = Deno.env.get("VOYAGE_API_KEY_NEURALSYNCH");
   if (!apiKey) {
     return null;
   }
@@ -258,31 +294,37 @@ async function embedQuery(question: string): Promise<number[] | null> {
   const timer = setTimeout(() => controller.abort(), RECALL_EMBED_TIMEOUT_MS);
   try {
     const res = await fetch(VOYAGE_API_URL, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        input:      [question],
-        model:      VOYAGE_MODEL,
+        input: [question],
+        model: VOYAGE_MODEL,
         input_type: VOYAGE_INPUT_TYPE,
       }),
       signal: controller.signal,
     });
     if (!res.ok) {
-      console.error(`[mcp v3.4] recall embedding ${res.status}: ${await res.text()}`);
+      console.error(
+        `[mcp v3.4] recall embedding ${res.status}: ${await res.text()}`,
+      );
       return null;
     }
     const data = await res.json();
     const embedding = data?.data?.[0]?.embedding;
     if (!Array.isArray(embedding) || embedding.length !== VOYAGE_DIM) {
-      console.error('[mcp v3.4] recall embedding shape invalid; falling back to FTS-only.');
+      console.error(
+        "[mcp v3.4] recall embedding shape invalid; falling back to FTS-only.",
+      );
       return null;
     }
     return embedding;
   } catch (err) {
-    console.error(`[mcp v3.4] recall embedding error: ${(err as Error).message}`);
+    console.error(
+      `[mcp v3.4] recall embedding error: ${(err as Error).message}`,
+    );
     return null;
   } finally {
     clearTimeout(timer);
@@ -290,34 +332,40 @@ async function embedQuery(question: string): Promise<number[] | null> {
 }
 
 // ─── Translation helpers (v1 SessionWriteback → smart-close v2 input) ──
-function normalizeDecisions(input: SessionWriteback['decisions_made']): Array<Record<string, any>> {
+function normalizeDecisions(
+  input: SessionWriteback["decisions_made"],
+): Array<Record<string, any>> {
   if (!Array.isArray(input)) return [];
   return input.map((d) => ({
-    title: d.title ?? d.decision ?? 'Untitled decision',
-    rationale: d.rationale ?? '',
-    decision_type: d.decision_type ?? d.type ?? 'technical',
+    title: d.title ?? d.decision ?? "Untitled decision",
+    rationale: d.rationale ?? "",
+    decision_type: d.decision_type ?? d.type ?? "technical",
     priority: d.priority ?? 5,
     confidence_score: d.confidence_score ?? 0.95,
     platform: d.platform ?? null,
   }));
 }
 
-function normalizeFiles(input: SessionWriteback['files_created'] | SessionWriteback['files_modified']): Array<Record<string, any>> {
+function normalizeFiles(
+  input: SessionWriteback["files_created"] | SessionWriteback["files_modified"],
+): Array<Record<string, any>> {
   if (!Array.isArray(input)) return [];
   return input.map((f) => ({
-    file_path: f.file_path ?? f.path ?? 'unknown',
+    file_path: f.file_path ?? f.path ?? "unknown",
     description: f.description ?? null,
     language: f.language ?? f.type ?? null,
   }));
 }
 
-function normalizeBlockers(input: SessionWriteback['blockers_encountered']): Array<Record<string, any>> {
+function normalizeBlockers(
+  input: SessionWriteback["blockers_encountered"],
+): Array<Record<string, any>> {
   if (!Array.isArray(input)) return [];
   return input.map((b) => ({
-    title: b.title ?? 'Untitled blocker',
-    description: b.description ?? '',
-    status: b.status ?? 'open',
-    error_type: b.error_type ?? 'general',
+    title: b.title ?? "Untitled blocker",
+    description: b.description ?? "",
+    status: b.status ?? "open",
+    error_type: b.error_type ?? "general",
   }));
 }
 
@@ -325,27 +373,41 @@ function normalizeBlockers(input: SessionWriteback['blockers_encountered']): Arr
 export class NeuralSynchClient {
   private baseUrl: string;
   private anonKey: string;
-  private serviceKey: string;
 
   constructor() {
-    this.baseUrl = 'https://udafklielwqdppnagtwc.supabase.co';
-    this.anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVkYWZrbGllbHdxZHBwbmFndHdjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzNTgxNzgsImV4cCI6MjA4OTkzNDE3OH0.0ueCBWNfdZGOHsLlJW9P3tUQ7QgD7tGmM6CQ1ZbOaAQ';
-    // S249: service_role key for direct-REST/RPC calls that RLS now gates.
-    // Read from Deno env SECRET — never hardcode service_role in this file.
-    // Falls back to anonKey if unset so the server still boots (search/stats
-    // will simply remain RLS-blocked until the env var is configured).
-    this.serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? this.anonKey;
+    this.baseUrl = Deno.env.get("SUPABASE_URL") ??
+      "https://udafklielwqdppnagtwc.supabase.co";
+    this.anonKey = Deno.env.get("SUPABASE_ANON_KEY") ??
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVkYWZrbGllbHdxZHBwbmFndHdjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzNTgxNzgsImV4cCI6MjA4OTkzNDE3OH0.0ueCBWNfdZGOHsLlJW9P3tUQ7QgD7tGmM6CQ1ZbOaAQ";
+  }
+
+  private userHeaders(accessToken?: string): Record<string, string> {
+    if (!accessToken) {
+      throw new Error("MCP_AUTH_REQUIRED: OAuth access token is required.");
+    }
+    return {
+      "Authorization": `Bearer ${accessToken}`,
+      "apikey": this.anonKey,
+    };
   }
 
   // ─── Memory packet read — unchanged from v1 (edge function, service_role internal) ──
-  async readMemoryPacket(clientId: string = 'viralbrain'): Promise<MemoryContext> {
+  async readMemoryPacket(
+    clientId: string = "viralbrain",
+    accessToken?: string,
+  ): Promise<MemoryContext> {
+    if (!accessToken) {
+      throw new Error(
+        "MCP_AUTH_REQUIRED: memory_read requires an OAuth access token.",
+      );
+    }
     try {
       const response = await fetch(
         `${this.baseUrl}/functions/v1/retrieve-context-packet?client_id=${clientId}`,
         {
           headers: {
-            'Authorization': `Bearer ${this.anonKey}`,
-            'apikey': this.anonKey,
+            "Authorization": `Bearer ${accessToken}`,
+            "apikey": this.anonKey,
           },
         },
       );
@@ -354,17 +416,20 @@ export class NeuralSynchClient {
       }
       return await response.json();
     } catch (error) {
-      console.error('[mcp v3.4] Memory read failed:', error);
-      throw new Error(`Failed to read memory packet: ${(error as Error).message}`);
+      console.error("[mcp v3.4] Memory read failed:", error);
+      throw new Error(
+        `Failed to read memory packet: ${(error as Error).message}`,
+      );
     }
   }
 
   // ─── Hybrid search v3.1 — ordinal lookup BEFORE hybrid call ──────────
   async searchRecordsHybrid(
     query: string,
-    clientId: string = 'viralbrain',
+    clientId: string = "viralbrain",
     limit: number = 10,
     filters: SearchFilters = {},
+    accessToken?: string,
   ): Promise<{ results: any[]; mode: string; ordinal_match: number | null }> {
     // 1. Decision-ordinal lookup — fires BEFORE hybrid search.
     const ordinalMatch = query.match(/\bdecision\s+(\d+)\b/i);
@@ -372,7 +437,11 @@ export class NeuralSynchClient {
     let matchedOrdinal: number | null = null;
     if (ordinalMatch) {
       matchedOrdinal = parseInt(ordinalMatch[1], 10);
-      ordinalRecord = await this.fetchDecisionByOrdinal(clientId, matchedOrdinal);
+      ordinalRecord = await this.fetchDecisionByOrdinal(
+        clientId,
+        matchedOrdinal,
+        accessToken,
+      );
     }
 
     // 2. Hybrid search (existing path, unchanged behavior).
@@ -387,12 +456,11 @@ export class NeuralSynchClient {
       const res = await fetch(
         `${this.baseUrl}/rest/v1/rpc/search_ns_records_hybrid`,
         {
-          method: 'POST',
+          method: "POST",
           headers: {
             // S249: service_role — RLS gates ns_records against anon.
-            'Authorization': `Bearer ${this.serviceKey}`,
-            'apikey': this.serviceKey,
-            'Content-Type': 'application/json',
+            ...this.userHeaders(accessToken),
+            "Content-Type": "application/json",
           },
           body: JSON.stringify(rpcBody),
         },
@@ -406,7 +474,9 @@ export class NeuralSynchClient {
 
       // Client-side filters
       if (filters.content_type) {
-        results = results.filter((r) => r?.content_type === filters.content_type);
+        results = results.filter((r) =>
+          r?.content_type === filters.content_type
+        );
       }
       if (filters.domain) {
         results = results.filter((r) => r?.domain === filters.domain);
@@ -422,12 +492,14 @@ export class NeuralSynchClient {
 
       return {
         results: results.slice(0, Math.max(1, Math.min(limit, 50))),
-        mode: embedding ? 'hybrid' : 'fts_only',
+        mode: embedding ? "hybrid" : "fts_only",
         ordinal_match: matchedOrdinal,
       };
     } catch (error) {
-      console.error('[mcp v3.4] Hybrid search failed:', error);
-      throw new Error(`Failed to search ns_records: ${(error as Error).message}`);
+      console.error("[mcp v3.4] Hybrid search failed:", error);
+      throw new Error(
+        `Failed to search ns_records: ${(error as Error).message}`,
+      );
     }
   }
 
@@ -435,6 +507,7 @@ export class NeuralSynchClient {
   private async fetchDecisionByOrdinal(
     clientId: string,
     ordinal: number,
+    accessToken?: string,
   ): Promise<any | null> {
     try {
       const url = `${this.baseUrl}/rest/v1/ns_locked_decisions` +
@@ -444,12 +517,13 @@ export class NeuralSynchClient {
       const res = await fetch(url, {
         headers: {
           // S249: service_role — RLS gates ns_locked_decisions against anon.
-          'Authorization': `Bearer ${this.serviceKey}`,
-          'apikey': this.serviceKey,
+          ...this.userHeaders(accessToken),
         },
       });
       if (!res.ok) {
-        console.error(`[mcp v3.4] ordinal lookup ${res.status}: ${await res.text()}`);
+        console.error(
+          `[mcp v3.4] ordinal lookup ${res.status}: ${await res.text()}`,
+        );
         return null;
       }
       const arr = await res.json();
@@ -460,10 +534,10 @@ export class NeuralSynchClient {
       return {
         id: d.id,
         title: d.title ?? `Decision ${ordinal}`,
-        content_type: 'decision',
+        content_type: "decision",
         domain: d.platform ?? null,
-        status: 'active',
-        body: d.rationale ?? '',
+        status: "active",
+        body: d.rationale ?? "",
         similarity: 1.0,
         session_number: null,
         source_session: null,
@@ -471,11 +545,11 @@ export class NeuralSynchClient {
         decision_ordinal: d.decision_ordinal,
         priority: d.priority,
         confidence_score: d.confidence_score,
-        match_source: 'ordinal_lookup',
+        match_source: "ordinal_lookup",
         combined_score: 1.0,
       };
     } catch (err) {
-      console.error('[mcp v3.4] ordinal lookup error:', err);
+      console.error("[mcp v3.4] ordinal lookup error:", err);
       return null;
     }
   }
@@ -484,17 +558,20 @@ export class NeuralSynchClient {
   // Single POST path for the retrieval RPCs, mirroring the
   // Authorization/apikey header shape used by searchRecordsHybrid. PostgREST
   // runs the function as service_role (RLS gates these tables against anon).
-  private async rpcCall(fn: string, body: Record<string, any>): Promise<any> {
+  private async rpcCall(
+    fn: string,
+    body: Record<string, any>,
+    accessToken?: string,
+  ): Promise<any> {
     try {
       const res = await fetch(
         `${this.baseUrl}/rest/v1/rpc/${fn}`,
         {
-          method: 'POST',
+          method: "POST",
           headers: {
             // S250: service_role — RLS gates the substrate tables against anon.
-            'Authorization': `Bearer ${this.serviceKey}`,
-            'apikey': this.serviceKey,
-            'Content-Type': 'application/json',
+            ...this.userHeaders(accessToken),
+            "Content-Type": "application/json",
           },
           body: JSON.stringify(body),
         },
@@ -513,7 +590,8 @@ export class NeuralSynchClient {
   // ─── Synthesizing recall (S250) — mirrors direct-path neuralsync-query ─
   async recallMemory(
     question: string,
-    clientId: string = 'viralbrain',
+    clientId: string = "viralbrain",
+    accessToken?: string,
   ): Promise<RecallResult> {
     // 1. Query embedding — 3s timeout, FTS fallback on any failure.
     const embedding = await embedQuery(question);
@@ -526,7 +604,11 @@ export class NeuralSynchClient {
       p_query_embedding: embedding ?? null,
       p_limit: 12,
     };
-    let records: any[] = await this.rpcCall('search_ns_records_hybrid', rpcBody);
+    let records: any[] = await this.rpcCall(
+      "search_ns_records_hybrid",
+      rpcBody,
+      accessToken,
+    );
     if (!Array.isArray(records)) records = [];
 
     // 3. Citations — mirrors the field just added to neuralsync-query.
@@ -537,7 +619,7 @@ export class NeuralSynchClient {
       domain: r.domain,
       session_number: r.session_number,
       match_source: r.match_source ?? undefined,
-      score: typeof r.combined_score === 'number'
+      score: typeof r.combined_score === "number"
         ? Math.round(r.combined_score * 1000) / 1000
         : null,
     }));
@@ -549,11 +631,16 @@ export class NeuralSynchClient {
   }
 
   // ─── Anthropic synthesis (S250) — answers ONLY from supplied records ──
-  private async synthesizeAnswer(question: string, records: any[]): Promise<string> {
-    const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
-    const absentMsg = 'This is not yet in your IP store.';
+  private async synthesizeAnswer(
+    question: string,
+    records: any[],
+  ): Promise<string> {
+    const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
+    const absentMsg = "This is not yet in your IP store.";
     if (!apiKey) {
-      console.error('[mcp v3.4] ANTHROPIC_API_KEY unset — cannot synthesize recall answer.');
+      console.error(
+        "[mcp v3.4] ANTHROPIC_API_KEY unset — cannot synthesize recall answer.",
+      );
       return absentMsg;
     }
     if (!Array.isArray(records) || records.length === 0) {
@@ -562,10 +649,12 @@ export class NeuralSynchClient {
 
     const context = records
       .map((r: any, i: number) => {
-        const body = typeof r.body === 'string' ? r.body : '';
-        return `[${i + 1}] (${r.content_type ?? 'record'} — ${r.title ?? 'untitled'})\n${body}`;
+        const body = typeof r.body === "string" ? r.body : "";
+        return `[${i + 1}] (${r.content_type ?? "record"} — ${
+          r.title ?? "untitled"
+        })\n${body}`;
       })
-      .join('\n\n');
+      .join("\n\n");
 
     const prompt =
       `Answer the question using ONLY the NeuralSynch memory records below. ` +
@@ -576,79 +665,87 @@ export class NeuralSynchClient {
 
     try {
       const res = await fetch(ANTHROPIC_API_URL, {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': ANTHROPIC_VERSION,
-          'Content-Type': 'application/json',
+          "x-api-key": apiKey,
+          "anthropic-version": ANTHROPIC_VERSION,
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
           model: ANTHROPIC_MODEL,
           max_tokens: ANTHROPIC_MAX_TOKENS,
-          messages: [{ role: 'user', content: prompt }],
+          messages: [{ role: "user", content: prompt }],
         }),
       });
       if (!res.ok) {
-        console.error(`[mcp v3.4] Anthropic synthesis ${res.status}: ${await res.text()}`);
+        console.error(
+          `[mcp v3.4] Anthropic synthesis ${res.status}: ${await res.text()}`,
+        );
         return absentMsg;
       }
       const data = await res.json();
       const text = data?.content?.[0]?.text;
-      return typeof text === 'string' && text.length > 0 ? text : absentMsg;
+      return typeof text === "string" && text.length > 0 ? text : absentMsg;
     } catch (err) {
-      console.error(`[mcp v3.4] Anthropic synthesis error: ${(err as Error).message}`);
+      console.error(
+        `[mcp v3.4] Anthropic synthesis error: ${(err as Error).message}`,
+      );
       return absentMsg;
     }
   }
 
   // ─── Recent records (S250) — ns_get_recent ───────────────────────────
   async getRecent(
-    clientId: string = 'viralbrain',
+    clientId: string = "viralbrain",
     params: RecentParams = {},
+    accessToken?: string,
   ): Promise<any[]> {
-    const out = await this.rpcCall('ns_get_recent', {
+    const out = await this.rpcCall("ns_get_recent", {
       p_client_id: clientId,
       p_content_type: params.content_type ?? null,
       p_domain: params.domain ?? null,
-      p_status: params.status ?? 'active',
+      p_status: params.status ?? "active",
       p_since: params.since ?? null,
       p_limit: params.limit ?? 20,
-    });
+    }, accessToken);
     return Array.isArray(out) ? out : [];
   }
 
   // ─── Latest session (S250) — ns_get_latest_session ───────────────────
   async getLatestSession(
-    clientId: string = 'viralbrain',
-    status: string = 'active',
+    clientId: string = "viralbrain",
+    status: string = "active",
+    accessToken?: string,
   ): Promise<any[]> {
-    const out = await this.rpcCall('ns_get_latest_session', {
+    const out = await this.rpcCall("ns_get_latest_session", {
       p_client_id: clientId,
       p_status: status,
-    });
+    }, accessToken);
     return Array.isArray(out) ? out : out;
   }
 
   // ─── Records by session (S250) — ns_get_by_session ───────────────────
   async getBySession(
-    clientId: string = 'viralbrain',
+    clientId: string = "viralbrain",
     sessionNumber: number,
     status?: string,
+    accessToken?: string,
   ): Promise<any[]> {
-    const out = await this.rpcCall('ns_get_by_session', {
+    const out = await this.rpcCall("ns_get_by_session", {
       p_client_id: clientId,
       p_session_number: sessionNumber,
       p_status: status ?? null,
-    });
+    }, accessToken);
     return Array.isArray(out) ? out : [];
   }
 
   // ─── Filtered records (S250) — ns_filter_records ─────────────────────
   async filterRecords(
-    clientId: string = 'viralbrain',
+    clientId: string = "viralbrain",
     params: FilterParams = {},
+    accessToken?: string,
   ): Promise<any[]> {
-    const out = await this.rpcCall('ns_filter_records', {
+    const out = await this.rpcCall("ns_filter_records", {
       p_client_id: clientId,
       p_content_type: params.content_type ?? null,
       p_domain: params.domain ?? null,
@@ -661,24 +758,27 @@ export class NeuralSynchClient {
       p_until: params.until ?? null,
       p_order: params.order ?? null,
       p_limit: params.limit ?? null,
-    });
+    }, accessToken);
     return Array.isArray(out) ? out : [];
   }
 
   // ─── Current session number (S250) — ns_current_session (bigint) ─────
-  async currentSession(clientId: string = 'viralbrain'): Promise<number | null> {
-    const out = await this.rpcCall('ns_current_session', {
+  async currentSession(
+    clientId: string = "viralbrain",
+    accessToken?: string,
+  ): Promise<number | null> {
+    const out = await this.rpcCall("ns_current_session", {
       p_client_id: clientId,
-    });
+    }, accessToken);
     // PostgREST returns a scalar RPC result directly (number) or as a wrapped
     // array depending on function signature; normalize to a plain number.
-    if (typeof out === 'number') return out;
+    if (typeof out === "number") return out;
     if (Array.isArray(out) && out.length > 0) {
       const first = out[0];
-      if (typeof first === 'number') return first;
-      if (first && typeof first === 'object') {
+      if (typeof first === "number") return first;
+      if (first && typeof first === "object") {
         const v = first.ns_current_session ?? Object.values(first)[0];
-        return typeof v === 'number' ? v : (v != null ? Number(v) : null);
+        return typeof v === "number" ? v : (v != null ? Number(v) : null);
       }
     }
     return out != null ? Number(out) : null;
@@ -687,11 +787,21 @@ export class NeuralSynchClient {
   // ─── Session writeback — unchanged from v3.2 (edge function, service_role internal) ──
   async writeSessionBack(
     writeback: SessionWriteback,
+    accessToken?: string,
   ): Promise<{ success: boolean; message: string; details?: any }> {
+    if (!accessToken) {
+      return {
+        success: false,
+        message:
+          "MCP_AUTH_REQUIRED: memory_write requires an OAuth access token.",
+      };
+    }
     const normalizedDecisions = normalizeDecisions(writeback.decisions_made);
     const normalizedFilesCreated = normalizeFiles(writeback.files_created);
     const normalizedFilesModified = normalizeFiles(writeback.files_modified);
-    const normalizedBlockers = normalizeBlockers(writeback.blockers_encountered);
+    const normalizedBlockers = normalizeBlockers(
+      writeback.blockers_encountered,
+    );
 
     const payload = {
       client_id: writeback.client_id,
@@ -707,18 +817,18 @@ export class NeuralSynchClient {
       handoff_prompt: writeback.handoff_prompt ?? null,
       bolt_project: writeback.bolt_project ?? null,
       platform_state: writeback.platform_state ?? {},
-      trigger_source: 'mcp-write',
+      trigger_source: "mcp-write",
     };
 
     try {
       const response = await fetch(
         `${this.baseUrl}/functions/v1/neuralsync-smart-close`,
         {
-          method: 'POST',
+          method: "POST",
           headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${this.anonKey}`,
-            'apikey': this.anonKey,
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${accessToken}`,
+            "apikey": this.anonKey,
           },
           body: JSON.stringify(payload),
         },
@@ -727,7 +837,8 @@ export class NeuralSynchClient {
       const data = await response.json();
 
       if (!response.ok || data?.success === false) {
-        const errMsg = data?.error || `HTTP ${response.status}: ${response.statusText}`;
+        const errMsg = data?.error ||
+          `HTTP ${response.status}: ${response.statusText}`;
         return {
           success: false,
           message: `smart-close failed: ${errMsg}`,
@@ -737,11 +848,14 @@ export class NeuralSynchClient {
 
       return {
         success: true,
-        message: `Session ${writeback.session_number} captured to substrate (mode: ${data?.mode ?? 'structured_writeback'})`,
+        message:
+          `Session ${writeback.session_number} captured to substrate (mode: ${
+            data?.mode ?? "structured_writeback"
+          })`,
         details: data,
       };
     } catch (error) {
-      console.error('[mcp v3.4] Memory write failed:', error);
+      console.error("[mcp v3.4] Memory write failed:", error);
       return {
         success: false,
         message: `Failed to write session back: ${(error as Error).message}`,
@@ -754,17 +868,21 @@ export class NeuralSynchClient {
   // Returns the complete ns_records row, or null when no such row exists.
   // null is a definitive negative and callers must surface it as one; the
   // defect this replaces was an empty result presented as a successful read.
-  async getRecordById(recordId: string): Promise<any | null> {
+  async getRecordById(
+    recordId: string,
+    clientId: string,
+    accessToken?: string,
+  ): Promise<any | null> {
     try {
       const url = `${this.baseUrl}/rest/v1/ns_records` +
         `?id=eq.${encodeURIComponent(recordId)}` +
+        `&client_id=eq.${encodeURIComponent(clientId)}` +
         `&select=id,title,body,content_type,domain,status,session_number,tags,attributes,created_at,client_id` +
         `&limit=1`;
       const res = await fetch(url, {
         headers: {
           // service_role — RLS gates ns_records against anon.
-          'Authorization': `Bearer ${this.serviceKey}`,
-          'apikey': this.serviceKey,
+          ...this.userHeaders(accessToken),
         },
       });
       if (!res.ok) {
@@ -775,13 +893,18 @@ export class NeuralSynchClient {
       if (!Array.isArray(rows) || rows.length === 0) return null;
       return rows[0];
     } catch (error) {
-      console.error('[mcp v3.5] Record fetch by id failed:', error);
-      throw new Error(`Failed to fetch ns_records row: ${(error as Error).message}`);
+      console.error("[mcp v3.5] Record fetch by id failed:", error);
+      throw new Error(
+        `Failed to fetch ns_records row: ${(error as Error).message}`,
+      );
     }
   }
 
   // ─── Memory stats (fixed table reference) ────────────────────────────
-  async getMemoryStats(clientId: string = 'viralbrain'): Promise<any> {
+  async getMemoryStats(
+    clientId: string = "viralbrain",
+    accessToken?: string,
+  ): Promise<any> {
     try {
       const queries = [
         `${this.baseUrl}/rest/v1/ns_locked_decisions?client_id=eq.${clientId}&select=id`,
@@ -793,20 +916,19 @@ export class NeuralSynchClient {
           fetch(url, {
             headers: {
               // S249: service_role — RLS gates these tables against anon.
-              'Authorization': `Bearer ${this.serviceKey}`,
-              'apikey': this.serviceKey,
-              'Prefer': 'count=exact',
-              'Range-Unit': 'items',
-              'Range': '0-0',
+              ...this.userHeaders(accessToken),
+              "Prefer": "count=exact",
+              "Range-Unit": "items",
+              "Range": "0-0",
             },
-          }),
+          })
         ),
       );
       const counts = responses.map((r) => {
-        const cr = r.headers.get('Content-Range');
+        const cr = r.headers.get("Content-Range");
         if (!cr) return 0;
-        const total = cr.split('/')[1];
-        return total && total !== '*' ? parseInt(total, 10) : 0;
+        const total = cr.split("/")[1];
+        return total && total !== "*" ? parseInt(total, 10) : 0;
       });
       return {
         locked_decisions: counts[0] ?? 0,
@@ -817,8 +939,10 @@ export class NeuralSynchClient {
         timestamp: new Date().toISOString(),
       };
     } catch (error) {
-      console.error('[mcp v3.4] Memory stats failed:', error);
-      throw new Error(`Failed to get memory stats: ${(error as Error).message}`);
+      console.error("[mcp v3.4] Memory stats failed:", error);
+      throw new Error(
+        `Failed to get memory stats: ${(error as Error).message}`,
+      );
     }
   }
 }
