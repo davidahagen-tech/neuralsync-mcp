@@ -101,6 +101,24 @@ export function defaultClientIdForTool(toolName: string): string {
   return toolName.startsWith("custody_") ? "neuralsynch" : "viralbrain";
 }
 
+// These custody contracts identify an existing server-side object rather than
+// accepting a caller-selected tenant. The custody service loads that object,
+// derives its authoritative client/project, and checks the OAuth user's
+// ns_mcp_custody_grants row (which is FK-bound to tenant membership). Injecting
+// the historical `neuralsynch` default here would reject valid non-neuralsynch
+// tenants before that authoritative lookup can occur.
+const CUSTODY_REFERENCE_SCOPED_TOOLS = new Set([
+  "custody_get_metadata",
+  "custody_retrieve",
+  "custody_verify",
+  "custody_finalize_upload",
+  "custody_add_dependency",
+  "custody_dependency_closure",
+  "custody_export_session",
+  "custody_scan_archive",
+  "custody_report_missing",
+]);
+
 export function bindToolArguments(
   toolName: string,
   rawArgs: unknown,
@@ -115,20 +133,26 @@ export function bindToolArguments(
         .test(args.id.trim())
     ? args.id
     : undefined;
+  const explicitClientId = typeof args.client_id === "string" &&
+      args.client_id.length > 0
+    ? args.client_id
+    : undefined;
+  const derivesCustodyScope = CUSTODY_REFERENCE_SCOPED_TOOLS.has(toolName) &&
+    explicitClientId === undefined;
   const requested = fetchPacketId ??
-    (typeof args.client_id === "string" && args.client_id.length > 0
-      ? args.client_id
-      : defaultClientIdForTool(toolName));
+    (explicitClientId ? explicitClientId : defaultClientIdForTool(toolName));
 
-  if (!principal.tenantRoles.has(requested)) {
-    throw new MCPAuthError(
-      403,
-      `The authenticated identity is not authorized for tenant ${requested}.`,
-    );
+  if (!derivesCustodyScope) {
+    if (!principal.tenantRoles.has(requested)) {
+      throw new MCPAuthError(
+        403,
+        `The authenticated identity is not authorized for tenant ${requested}.`,
+      );
+    }
+
+    args.client_id = requested;
+    if (fetchPacketId !== undefined) args.id = requested;
   }
-
-  args.client_id = requested;
-  if (fetchPacketId !== undefined) args.id = requested;
   // Internal-only transport value. It is not part of any advertised schema
   // and is consumed only when calling JWT-protected Edge Functions.
   Object.defineProperty(args, "__access_token", {
