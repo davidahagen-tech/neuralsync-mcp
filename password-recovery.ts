@@ -1,4 +1,7 @@
-import { DEFAULT_SUPABASE_ANON_KEY, DEFAULT_SUPABASE_URL } from "./auth.ts";
+import {
+  DEFAULT_SUPABASE_PUBLISHABLE_KEY,
+  DEFAULT_SUPABASE_URL,
+} from "./auth.ts";
 
 function scriptValue(value: string): string {
   return JSON.stringify(value).replaceAll("<", "\\u003c");
@@ -6,8 +9,8 @@ function scriptValue(value: string): string {
 
 export function passwordRecoveryResponse(): Response {
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? DEFAULT_SUPABASE_URL;
-  const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ??
-    DEFAULT_SUPABASE_ANON_KEY;
+  const publishableKey = Deno.env.get("SUPABASE_PUBLISHABLE_KEY") ??
+    DEFAULT_SUPABASE_PUBLISHABLE_KEY;
   const recoveryEmail = "davidahagen@proton.me";
   const nonce = crypto.randomUUID().replaceAll("-", "");
   const html = `<!doctype html>
@@ -52,7 +55,7 @@ export function passwordRecoveryResponse(): Response {
     import { createClient } from "https://esm.sh/@supabase/supabase-js@2.114.0";
 
     const supabase = createClient(${scriptValue(supabaseUrl)}, ${
-    scriptValue(anonKey)
+    scriptValue(publishableKey)
   }, {
       auth: { persistSession: true, detectSessionInUrl: true, autoRefreshToken: true, flowType: "pkce" }
     });

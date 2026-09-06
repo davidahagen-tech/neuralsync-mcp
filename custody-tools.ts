@@ -141,14 +141,14 @@ export async function custodyCall(
     "Content-Type": "application/json",
   };
   if (accessToken) {
-    const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
-    if (!anonKey) {
+    const publishableKey = Deno.env.get("SUPABASE_PUBLISHABLE_KEY");
+    if (!publishableKey) {
       throw new Error(
-        "CUSTODY_AUTH_NOT_CONFIGURED: SUPABASE_ANON_KEY is required for OAuth custody calls.",
+        "CUSTODY_AUTH_NOT_CONFIGURED: SUPABASE_PUBLISHABLE_KEY is required for OAuth custody calls.",
       );
     }
     headers.Authorization = `Bearer ${accessToken}`;
-    headers.apikey = anonKey;
+    headers.apikey = publishableKey;
   } else if (key) {
     headers["x-custody-key"] = key;
   }

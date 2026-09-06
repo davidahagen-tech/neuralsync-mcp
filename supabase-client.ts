@@ -372,13 +372,13 @@ function normalizeBlockers(
 // ─── Client class ───────────────────────────────────────────────────────
 export class NeuralSynchClient {
   private baseUrl: string;
-  private anonKey: string;
+  private publishableKey: string;
 
   constructor() {
     this.baseUrl = Deno.env.get("SUPABASE_URL") ??
       "https://udafklielwqdppnagtwc.supabase.co";
-    this.anonKey = Deno.env.get("SUPABASE_ANON_KEY") ??
-      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVkYWZrbGllbHdxZHBwbmFndHdjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzNTgxNzgsImV4cCI6MjA4OTkzNDE3OH0.0ueCBWNfdZGOHsLlJW9P3tUQ7QgD7tGmM6CQ1ZbOaAQ";
+    this.publishableKey = Deno.env.get("SUPABASE_PUBLISHABLE_KEY") ??
+      "sb_publishable_Vl8i5lkpXbbhs3wihMFmpA_KXMMWEjf";
   }
 
   private userHeaders(accessToken?: string): Record<string, string> {
@@ -387,7 +387,7 @@ export class NeuralSynchClient {
     }
     return {
       "Authorization": `Bearer ${accessToken}`,
-      "apikey": this.anonKey,
+      "apikey": this.publishableKey,
     };
   }
 
@@ -407,7 +407,7 @@ export class NeuralSynchClient {
         {
           headers: {
             "Authorization": `Bearer ${accessToken}`,
-            "apikey": this.anonKey,
+            "apikey": this.publishableKey,
           },
         },
       );
@@ -828,7 +828,7 @@ export class NeuralSynchClient {
           headers: {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${accessToken}`,
-            "apikey": this.anonKey,
+            "apikey": this.publishableKey,
           },
           body: JSON.stringify(payload),
         },

@@ -23,8 +23,8 @@ export const DEFAULT_SUPABASE_URL = "https://udafklielwqdppnagtwc.supabase.co";
 
 // Public key: intentionally not a credential. It identifies the Supabase
 // project while the user bearer token establishes the authenticated session.
-export const DEFAULT_SUPABASE_ANON_KEY =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVkYWZrbGllbHdxZHBwbmFndHdjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzNTgxNzgsImV4cCI6MjA4OTkzNDE3OH0.0ueCBWNfdZGOHsLlJW9P3tUQ7QgD7tGmM6CQ1ZbOaAQ";
+export const DEFAULT_SUPABASE_PUBLISHABLE_KEY =
+  "sb_publishable_Vl8i5lkpXbbhs3wihMFmpA_KXMMWEjf";
 
 function bearerToken(request: Request): string {
   const value = request.headers.get("Authorization") ?? "";
@@ -41,11 +41,11 @@ export async function authenticateMCPRequest(
 ): Promise<MCPPrincipal> {
   const accessToken = bearerToken(request);
   const baseUrl = Deno.env.get("SUPABASE_URL") ?? DEFAULT_SUPABASE_URL;
-  const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ??
-    DEFAULT_SUPABASE_ANON_KEY;
+  const publishableKey = Deno.env.get("SUPABASE_PUBLISHABLE_KEY") ??
+    DEFAULT_SUPABASE_PUBLISHABLE_KEY;
   const headers = {
     Authorization: `Bearer ${accessToken}`,
-    apikey: anonKey,
+    apikey: publishableKey,
   };
 
   const userResponse = await fetcher(`${baseUrl}/auth/v1/user`, { headers });
