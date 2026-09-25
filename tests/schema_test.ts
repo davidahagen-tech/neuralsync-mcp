@@ -68,8 +68,8 @@ Deno.test('the original 12 memory tools are still exactly 12', () => {
   assertEquals(MEMORY_TOOLS_SCHEMA.map((t: any) => t.name), ORIGINAL_12);
 });
 
-Deno.test('total advertised tool count is 27', () => {
-  assertEquals(ALL_TOOLS_SCHEMA.length, 27);
+Deno.test('27 existing tools plus one Personal capability adapter', () => {
+  assertEquals(ALL_TOOLS_SCHEMA.length, 28);
   assertEquals(MEMORY_TOOLS_SCHEMA.length + RECORD_TOOLS_SCHEMA.length + CUSTODY_TOOLS_SCHEMA.length, 27);
   assertEquals(CUSTODY_TOOLS_SCHEMA.length, 14);
 });
@@ -85,7 +85,7 @@ Deno.test('original 12 occupy the first 12 slots and are deep-equal, unmodified'
 });
 
 Deno.test('the 15 non-memory tools are present, after the original 12, in order', () => {
-  assertEquals(ALL_TOOLS_SCHEMA.slice(12).map((t: any) => t.name), POST_MEMORY_15);
+  assertEquals(ALL_TOOLS_SCHEMA.slice(12,27).map((t: any) => t.name), POST_MEMORY_15);
 });
 
 Deno.test('no duplicate tool names', () => {

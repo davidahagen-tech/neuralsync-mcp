@@ -82,12 +82,9 @@ export async function authenticateMCPRequest(
       }
     }
   }
-  if (tenantRoles.size === 0) {
-    throw new MCPAuthError(
-      403,
-      "The authenticated user has no active NeuralSynch tenant membership.",
-    );
-  }
+  // Personal subscribers need not have organizational membership. Membership
+  // still gates every memory/custody tool in bindToolArguments; the Personal
+  // endpoint separately verifies current session, OAuth client and entitlement.
 
   return {
     userId: user.id,
@@ -142,7 +139,7 @@ export function bindToolArguments(
   const requested = fetchPacketId ??
     (explicitClientId ? explicitClientId : defaultClientIdForTool(toolName));
 
-  if (!derivesCustodyScope) {
+  if (!derivesCustodyScope && toolName !== 'personal_capability') {
     if (!principal.tenantRoles.has(requested)) {
       throw new MCPAuthError(
         403,

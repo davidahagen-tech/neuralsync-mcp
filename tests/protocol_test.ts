@@ -11,13 +11,13 @@ import { MCPServer } from "../mcp-protocol.ts";
 import { MEMORY_TOOLS_SCHEMA } from "../memory-tools.ts";
 import { CUSTODY_KEY_ENV } from "../custody-tools.ts";
 
-Deno.test("tools/list advertises exactly 27 tools over JSON-RPC", async () => {
+Deno.test("tools/list advertises exactly 28 tools over JSON-RPC", async () => {
   const res: any = await new MCPServer().handleRequest({
     jsonrpc: "2.0",
     id: 1,
     method: "tools/list",
   });
-  assertEquals(res.result.tools.length, 27);
+  assertEquals(res.result.tools.length, 28);
 });
 
 Deno.test("tools/list still carries the original 12 first, unmodified", async () => {
@@ -68,24 +68,24 @@ Deno.test("tools/list includes the S251 and S252 custody tool names", async () =
   }
 });
 
-Deno.test("initialize reports version 1.3.0", async () => {
+Deno.test("initialize reports version 1.4.0", async () => {
   const res: any = await new MCPServer().handleRequest({
     jsonrpc: "2.0",
     id: 1,
     method: "initialize",
   });
-  assertEquals(res.result.serverInfo.version, "1.3.0");
+  assertEquals(res.result.serverInfo.version, "1.4.0");
   assertEquals(res.result.serverInfo.name, "neuralsynch-memory");
 });
 
-Deno.test("GET / discovery document lists all 27 tools", async () => {
+Deno.test("GET / discovery document lists all 28 tools", async () => {
   const res = await new MCPServer().handleHTTP(
     new Request("https://example.test/", { method: "GET" }),
   );
   const body = await res.json();
   assertEquals(res.status, 200);
-  assertEquals(body.tools.length, 27);
-  assertEquals(body.server.version, "1.3.0");
+  assertEquals(body.tools.length, 28);
+  assertEquals(body.server.version, "1.4.0");
 });
 
 Deno.test("POST /mcp without OAuth fails closed with resource metadata challenge", async () => {
@@ -199,5 +199,5 @@ Deno.test("no custody key is required to LIST tools — only to call them", asyn
     id: 1,
     method: "tools/list",
   });
-  assertEquals(res.result.tools.length, 27);
+  assertEquals(res.result.tools.length, 28);
 });

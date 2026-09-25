@@ -71,6 +71,7 @@
 
 import { NeuralSynchClient, type SessionWriteback } from "./supabase-client.ts";
 import { CUSTODY_TOOLS_SCHEMA, CustodyToolHandler } from "./custody-tools.ts";
+import { PERSONAL_TOOLS_SCHEMA, callPersonalCapability } from './personal-tools.ts';
 
 // Canonical UUID shape. Used to tell an ns_records record id apart from a
 // client_id in the `fetch` tool. Anchored at both ends — a client_id that
@@ -108,6 +109,8 @@ export class MemoryToolHandler {
   async handleToolCall(tool: MCPToolCall): Promise<MCPToolResult> {
     try {
       switch (tool.name) {
+        case 'personal_capability':
+          return await callPersonalCapability(tool.arguments);
         case "memory_read":
           return await this.handleMemoryRead(tool.arguments);
         case "memory_write":
@@ -1306,4 +1309,5 @@ export const ALL_TOOLS_SCHEMA = [
   ...MEMORY_TOOLS_SCHEMA,
   ...RECORD_TOOLS_SCHEMA,
   ...CUSTODY_TOOLS_SCHEMA,
+  ...PERSONAL_TOOLS_SCHEMA,
 ];
