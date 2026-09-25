@@ -1,0 +1,101 @@
+import {
+  DEFAULT_SUPABASE_PUBLISHABLE_KEY,
+  DEFAULT_SUPABASE_URL,
+} from "./auth.ts";
+import type { MCPToolResult } from "./memory-tools.ts";
+
+export const PERSONAL_TOOLS_SCHEMA = [{
+  name: "personal_capability",
+  description:
+    "Invoke the same governed NeuralSynch Personal capabilities used by Axiom and return the complete result here. Requires a qualified OAuth client and current Personal entitlement. First use session with a stable conversation_key UUID. invoke accepts prompt and expectedVersion for Recall, Related, Predict, Research, Deep Research, Verify, Challenger, Humanizer, Intelligence Update and Visualize. Preserve the same expectedVersion on a retry; result recovers without provider execution or NUU debit. report, intake and save reuse their existing explicit governed contracts; a job status is not its completed output. Never present a partial/status response as a complete result. Does not grant authority, activate a trial or admit intelligence without explicit consent.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      operation: {
+        type: "string",
+        enum: ["session", "invoke", "result", "report", "intake", "save"],
+      },
+      conversation_key: {
+        type: "string",
+        description:
+          "Stable UUID for this originating conversation. Reuse it for invocation, recovery and retries.",
+      },
+      payload: {
+        type: "object",
+        description:
+          "Unmodified input for the existing Personal capability contract; no user, tenant, Origin or credentials. Session accepts {}. invoke: prompt, expectedVersion, optional memory_id. result: optional request_key; optional offset and limit (1..16000 Unicode characters) provide lossless continuation for large outputs. Reuse delivery.request_key for every later chunk; concatenate transfer.text in offset order and verify delivery.sha256 over UTF-8. Partial transfer is not complete output. report uses action/job_id/expectedVersion and native create/draft/compile/advance/present/status/preview/retrieve inputs; review/release/revoke are forbidden. intake uses its existing action/job_id/source_id/consent contract. save accepts action=remember, request_id, title, body, subject_key, and explicit confirm_durable_admission=true; no source-consent changes.",
+      },
+    },
+    required: ["operation", "conversation_key", "payload"],
+  },
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: true,
+  },
+}];
+
+export async function callPersonalCapability(
+  args: Record<string, unknown>,
+  fetcher: typeof fetch = fetch,
+): Promise<MCPToolResult> {
+  const token = args.__access_token;
+  if (typeof token !== "string" || !token) {
+    throw new Error("Authenticated Personal OAuth session required.");
+  }
+  if (
+    Object.keys(args).some((k) =>
+      !["operation", "conversation_key", "payload"].includes(k)
+    )
+  ) throw new Error("Client context rejected.");
+  const base = Deno.env.get("SUPABASE_URL") ?? DEFAULT_SUPABASE_URL;
+  const key = Deno.env.get("SUPABASE_PUBLISHABLE_KEY") ??
+    Deno.env.get("SUPABASE_ANON_KEY") ?? DEFAULT_SUPABASE_PUBLISHABLE_KEY;
+  const response = await fetcher(`${base}/functions/v1/personal-capabilities`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      apikey: key,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      operation: args.operation,
+      conversation_key: args.conversation_key,
+      payload: args.payload,
+    }),
+  });
+  const type = response.headers.get("Content-Type") ??
+    "application/octet-stream";
+  if (type.includes("json") || type.startsWith("text/")) {
+    // Deliberately no slice, preview, summary fallback, or retry on ambiguity.
+    return {
+      content: [{ type: "text", text: await response.text() }],
+      isError: !response.ok,
+    };
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  let raw = "";
+  for (let i = 0; i < bytes.length; i += 16384) {
+    raw += String.fromCharCode(...bytes.subarray(i, i + 16384));
+  }
+  const digest = Array.from(
+    new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
+  ).map((v) => v.toString(16).padStart(2, "0")).join("");
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        schema: "neuralsynch.result.artifact.v1",
+        media_type: type,
+        byte_length: bytes.length,
+        sha256: digest,
+        encoding: "base64",
+        data: btoa(raw),
+        complete: true,
+      }),
+    }],
+    isError: !response.ok,
+  };
+}
