@@ -204,6 +204,7 @@ export class MemoryToolHandler {
     const context = await this.client.readMemoryPacket(
       clientId,
       args.__access_token,
+      args.session_number,
     );
 
     return {
@@ -361,17 +362,19 @@ export class MemoryToolHandler {
         text: JSON.stringify(
           {
             client_id: clientId,
-            memory_system_health: "operational",
+            memory_system_health: ["verified", "no_records"].includes(stats.state) ? "operational" : stats.state,
+            statistics_state: stats.state,
+            canonical_identity: stats.identity ?? null,
+            error: stats.error ?? null,
             statistics: {
               locked_decisions: stats.locked_decisions,
               memory_records: stats.memory_records,
               ns_records: stats.ns_records,
               session_writebacks: stats.session_writebacks,
-              total_artifacts: stats.locked_decisions + stats.ns_records +
-                stats.session_writebacks,
+              total_artifacts: ["verified", "no_records"].includes(stats.state) ? stats.locked_decisions + stats.ns_records + stats.session_writebacks : null,
             },
             timestamp: stats.timestamp,
-            anti_amnesia_status: stats.locked_decisions > 0
+            anti_amnesia_status: !["verified", "no_records"].includes(stats.state) ? "unknown" : stats.locked_decisions > 0
               ? "active"
               : "initializing",
           },
@@ -792,7 +795,7 @@ export const MEMORY_TOOLS_SCHEMA = [
         session_number: {
           type: "number",
           description:
-            "Target session number (optional, auto-increments if not provided)",
+            "Target session number (optional, defaults to the current canonical session; does not advance it)",
         },
       },
     },

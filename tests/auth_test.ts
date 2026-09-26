@@ -105,6 +105,9 @@ Deno.test("OAuth subject is resolved before RLS-visible membership", async () =>
   const fetcher: typeof fetch = (input) => {
     const url = String(input);
     calls.push(url);
+    if (url.endsWith("/rpc/ns_substrate_memberships_v1")) {
+      return Promise.resolve(Response.json([{ identifier: "neuralsynch", role: "owner" }, { identifier: "viralbrain", role: "owner" }]));
+    }
     if (url.endsWith("/auth/v1/user")) {
       return Promise.resolve(
         Response.json({ id: principal.userId, email: "owner@example.test" }),
@@ -122,7 +125,8 @@ Deno.test("OAuth subject is resolved before RLS-visible membership", async () =>
   );
   assertEquals(out.userId, principal.userId);
   assertEquals(out.tenantRoles.get("viralbrain"), "owner");
-  assertEquals(calls.length, 2);
+  assertEquals(calls.length, 3);
+  assertEquals(out.substrateRoles?.get("neuralsynch"), "owner");
   assertEquals(calls[1].includes("auth_user_id=eq."), true);
 });
 
