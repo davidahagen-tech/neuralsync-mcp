@@ -53,6 +53,7 @@ const POST_MEMORY_15 = [
 // Of the post-memory tools, these are read-only; the rest perform governed
 // writes and must NOT advertise readOnlyHint: true.
 const READ_ONLY_TOOLS = new Set([
+  "personal_result",
   'get_record_by_id',
   'custody_resolve_alias',
   'custody_get_metadata',
@@ -69,7 +70,7 @@ Deno.test('the original 12 memory tools are still exactly 12', () => {
 });
 
 Deno.test('27 existing tools plus one Personal capability adapter', () => {
-  assertEquals(ALL_TOOLS_SCHEMA.length, 28);
+  assertEquals(ALL_TOOLS_SCHEMA.length, 29);
   assertEquals(MEMORY_TOOLS_SCHEMA.length + RECORD_TOOLS_SCHEMA.length + CUSTODY_TOOLS_SCHEMA.length, 27);
   assertEquals(CUSTODY_TOOLS_SCHEMA.length, 14);
 });

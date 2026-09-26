@@ -1,3 +1,7 @@
+import {
+  callPersonalResult,
+  PERSONAL_RESULT_SCHEMA,
+} from "./personal-result.ts";
 // Memory Packet tool handlers for MCP protocol — v2.3 (S250 recall + retrieval)
 // Maps MCP tool calls to NeuralSynch Memory Packet operations.
 //
@@ -71,7 +75,10 @@
 
 import { NeuralSynchClient, type SessionWriteback } from "./supabase-client.ts";
 import { CUSTODY_TOOLS_SCHEMA, CustodyToolHandler } from "./custody-tools.ts";
-import { PERSONAL_TOOLS_SCHEMA, callPersonalCapability } from './personal-tools.ts';
+import {
+  callPersonalCapability,
+  PERSONAL_TOOLS_SCHEMA,
+} from "./personal-tools.ts";
 
 // Canonical UUID shape. Used to tell an ns_records record id apart from a
 // client_id in the `fetch` tool. Anchored at both ends — a client_id that
@@ -90,6 +97,8 @@ export interface MCPToolCall {
 }
 
 export interface MCPToolResult {
+  structuredContent?: Record<string, unknown>;
+  _meta?: Record<string, unknown>;
   content: Array<{
     type: "text";
     text: string;
@@ -109,7 +118,9 @@ export class MemoryToolHandler {
   async handleToolCall(tool: MCPToolCall): Promise<MCPToolResult> {
     try {
       switch (tool.name) {
-        case 'personal_capability':
+        case "personal_result":
+          return await callPersonalResult(tool.arguments);
+        case "personal_capability":
           return await callPersonalCapability(tool.arguments);
         case "memory_read":
           return await this.handleMemoryRead(tool.arguments);
@@ -1310,4 +1321,5 @@ export const ALL_TOOLS_SCHEMA = [
   ...RECORD_TOOLS_SCHEMA,
   ...CUSTODY_TOOLS_SCHEMA,
   ...PERSONAL_TOOLS_SCHEMA,
+  PERSONAL_RESULT_SCHEMA,
 ];
