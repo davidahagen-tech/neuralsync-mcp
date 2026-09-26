@@ -65,7 +65,7 @@ export class MCPServer {
   private sessionId: string;
   private serverInfo = {
     name: "neuralsynch-memory",
-    version: "1.4.1",
+    version: "1.4.2",
     description: "NeuralSynch Memory Packet system for Claude anti-amnesia",
     author: "Ascension 1 Capital LLC",
     capabilities: {

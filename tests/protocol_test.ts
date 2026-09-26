@@ -68,13 +68,13 @@ Deno.test("tools/list includes the S251 and S252 custody tool names", async () =
   }
 });
 
-Deno.test("initialize reports version 1.4.1", async () => {
+Deno.test("initialize reports version 1.4.2", async () => {
   const res: any = await new MCPServer().handleRequest({
     jsonrpc: "2.0",
     id: 1,
     method: "initialize",
   });
-  assertEquals(res.result.serverInfo.version, "1.4.1");
+  assertEquals(res.result.serverInfo.version, "1.4.2");
   assertEquals(res.result.serverInfo.name, "neuralsynch-memory");
 });
 
@@ -85,7 +85,7 @@ Deno.test("GET / discovery document lists all 29 tools", async () => {
   const body = await res.json();
   assertEquals(res.status, 200);
   assertEquals(body.tools.length, 29);
-  assertEquals(body.server.version, "1.4.1");
+  assertEquals(body.server.version, "1.4.2");
 });
 
 Deno.test("POST /mcp without OAuth fails closed with resource metadata challenge", async () => {

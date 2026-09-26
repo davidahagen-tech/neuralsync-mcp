@@ -1,7 +1,7 @@
 // One standard MCP Apps viewer for every completed governed Personal result.
 // No credentials, public download URLs, external scripts, or durable storage.
 export const RESULT_RESOURCE = {
-  uri: "ui://neuralsynch/complete-result-v1.html",
+  uri: "ui://neuralsynch/complete-result-v2.html",
   name: "NeuralSynch complete result",
   mimeType: "text/html;profile=mcp-app",
 };
@@ -40,7 +40,15 @@ async function recover(){if(!ready||!locator||busy)return false;busy=true;refres
  if(bytes.length!==v.delivery.byte_length||digest!==v.delivery.sha256||!v.delivery.complete)throw new Error('Result integrity verification failed.');
  const parsed=JSON.parse(v.payload);current=v;
  statusEl.textContent='Complete result verified in this interface. '+bytes.length+' UTF-8 bytes.\\nSHA-256: '+digest+'\\nRequest: '+v.delivery.request_key+'\\nRelease receipt: '+(v.automation?.final_receipt_id||'unavailable');
- const display=document.createElement('div');for(const [k,value]of Object.entries(parsed))field(display,k,value);resultEl.append(display);
+ const display=document.createElement('div');
+ // SVG remains in an inert image context, never injected into the document.
+ // Its exact original bytes are also retained in the complete JSON below.
+ if(parsed.visual?.media_type==='image/svg+xml'&&typeof parsed.visual.svg==='string'){
+ const svgBytes=new TextEncoder().encode(parsed.visual.svg);const svgHash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',svgBytes))).map(x=>x.toString(16).padStart(2,'0')).join('');
+ if(svgHash!==parsed.visual.sha256)throw new Error('Visual artifact integrity verification failed.');
+ let binary='';for(const b of svgBytes)binary+=String.fromCharCode(b);const img=document.createElement('img');img.alt='Complete governed evidence visual';img.style.maxWidth='100%';img.src='data:image/svg+xml;base64,'+btoa(binary);display.append(img);
+ }
+ for(const [k,value]of Object.entries(parsed))field(display,k,value);resultEl.append(display);
  const details=document.createElement('details'),summary=document.createElement('summary'),raw=document.createElement('pre');summary.textContent='Exact complete JSON';raw.id='complete-json';raw.textContent=v.payload;details.append(summary,raw);resultEl.append(details);download.disabled=false;return true;
  }catch(e){clear(e.message);return false}finally{busy=false;refresh.disabled=!locator;send('ui/notifications/size-changed',{height:Math.min(document.documentElement.scrollHeight,760)})}}
 refresh.onclick=()=>recover();
@@ -50,5 +58,5 @@ addEventListener('message',event=>{if(event.source!==parent)return;const m=event
  if(m.method==='ui/notifications/tool-result'&&!locator){const v=m.params?.structuredContent;if(v?.conversation_key&&v.delivery?.request_key){locator={conversation_key:v.conversation_key,request_key:v.delivery.request_key};refresh.disabled=false;recover()}else if(m.params?.isError)clear('Result withheld or unavailable.');}
  if(m.method==='ui/resource-teardown'){clear('Closed');parent.postMessage({jsonrpc:'2.0',id:m.id,result:{}},'*')}
 });
-rpc('ui/initialize',{protocolVersion:'2026-01-26',appInfo:{name:'NeuralSynch complete result',version:'1.0.0'},appCapabilities:{availableDisplayModes:['inline']}}).then(()=>{ready=true;send('ui/notifications/initialized',{});recover()}).catch(e=>clear(e.message));
+rpc('ui/initialize',{protocolVersion:'2026-01-26',appInfo:{name:'NeuralSynch complete result',version:'1.0.1'},appCapabilities:{availableDisplayModes:['inline']}}).then(()=>{ready=true;send('ui/notifications/initialized',{});recover()}).catch(e=>clear(e.message));
 </script></html>`;
