@@ -1,3 +1,4 @@
+import { RESULT_RESOURCE, resultResourceContents } from "./result-view.ts";
 // MCP (Model Context Protocol) implementation for NeuralSynch — v1.0.1 (S187 close)
 // Handles JSON-RPC 2.0 protocol for tool discovery and execution
 // Supports Streamable HTTP transport for Claude Desktop/Web/ChatGPT connectors
@@ -64,12 +65,12 @@ export class MCPServer {
   private sessionId: string;
   private serverInfo = {
     name: "neuralsynch-memory",
-    version: "1.4.0",
+    version: "1.4.2",
     description: "NeuralSynch Memory Packet system for Claude anti-amnesia",
     author: "Ascension 1 Capital LLC",
     capabilities: {
       tools: true,
-      resources: false,
+      resources: true,
       prompts: false,
       logging: true,
     },
@@ -90,6 +91,25 @@ export class MCPServer {
           return this.handleInitialize(request);
         case "notifications/initialized":
           return null;
+        case "resources/list":
+          return {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: { resources: [RESULT_RESOURCE] },
+          };
+        case "resources/read":
+          if (request.params?.uri !== RESULT_RESOURCE.uri) {
+            return this.createErrorResponse(
+              request.id,
+              -32602,
+              "Unknown resource",
+            );
+          }
+          return {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: { contents: [resultResourceContents()] },
+          };
         case "tools/list":
           return this.handleToolsList(request);
         case "tools/call":
@@ -121,6 +141,12 @@ export class MCPServer {
         protocolVersion: "2024-11-05",
         capabilities: {
           tools: { listChanged: false },
+          resources: { listChanged: false },
+          extensions: {
+            "io.modelcontextprotocol/ui": {
+              mimeTypes: ["text/html;profile=mcp-app"],
+            },
+          },
         },
         serverInfo: {
           name: this.serverInfo.name,
@@ -165,6 +191,10 @@ export class MCPServer {
         id: request.id,
         result: {
           content: result.content,
+          ...(result.structuredContent
+            ? { structuredContent: result.structuredContent }
+            : {}),
+          ...(result._meta ? { _meta: result._meta } : {}),
           isError: result.isError || false,
         },
       };

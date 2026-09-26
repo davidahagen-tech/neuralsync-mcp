@@ -139,7 +139,10 @@ export function bindToolArguments(
   const requested = fetchPacketId ??
     (explicitClientId ? explicitClientId : defaultClientIdForTool(toolName));
 
-  if (!derivesCustodyScope && toolName !== 'personal_capability') {
+  if (
+    !derivesCustodyScope &&
+    !["personal_capability", "personal_result"].includes(toolName)
+  ) {
     if (!principal.tenantRoles.has(requested)) {
       throw new MCPAuthError(
         403,
