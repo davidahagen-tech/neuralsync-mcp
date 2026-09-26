@@ -395,6 +395,7 @@ export class NeuralSynchClient {
   async readMemoryPacket(
     clientId: string = "viralbrain",
     accessToken?: string,
+    sessionNumber?: number,
   ): Promise<MemoryContext> {
     if (!accessToken) {
       throw new Error(
@@ -402,8 +403,10 @@ export class NeuralSynchClient {
       );
     }
     try {
+      const params = new URLSearchParams({ client_id: clientId });
+      if (sessionNumber !== undefined) params.set("session_number", String(sessionNumber));
       const response = await fetch(
-        `${this.baseUrl}/functions/v1/retrieve-context-packet?client_id=${clientId}`,
+        `${this.baseUrl}/functions/v1/retrieve-context-packet?${params}`,
         {
           headers: {
             "Authorization": `Bearer ${accessToken}`,

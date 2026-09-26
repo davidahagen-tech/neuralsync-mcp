@@ -2,6 +2,20 @@ import { assertEquals, assertThrows } from "jsr:@std/assert@^1.0.0";
 import { NeuralSynchClient } from "../supabase-client.ts";
 import { bindToolArguments } from "../auth.ts";
 
+Deno.test("packet read preserves requested session and safely encodes bank alias", async () => {
+  const old = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    assertEquals(url.searchParams.get("client_id"), "bank&alias");
+    assertEquals(url.searchParams.get("session_number"), "432");
+    return Response.json({ success: true, session_number: 432 });
+  };
+  try {
+    const result = await new NeuralSynchClient().readMemoryPacket("bank&alias", "synthetic-token", 432);
+    assertEquals(result.session_number, 432);
+  } finally { globalThis.fetch = old; }
+});
+
 for (const [label, response, expected] of [
   ["verified populated bank", () => Response.json({ state: "verified", ns_records: 4950, memory_records: 4950, session_writebacks: 1556, locked_decisions: 1392 }), "verified"],
   ["verified empty bank", () => Response.json({ state: "no_records", ns_records: 0, memory_records: 0, session_writebacks: 0, locked_decisions: 0 }), "no_records"],

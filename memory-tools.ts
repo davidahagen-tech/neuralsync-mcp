@@ -204,6 +204,7 @@ export class MemoryToolHandler {
     const context = await this.client.readMemoryPacket(
       clientId,
       args.__access_token,
+      args.session_number,
     );
 
     return {
@@ -794,7 +795,7 @@ export const MEMORY_TOOLS_SCHEMA = [
         session_number: {
           type: "number",
           description:
-            "Target session number (optional, auto-increments if not provided)",
+            "Target session number (optional, defaults to the current canonical session; does not advance it)",
         },
       },
     },
