@@ -510,25 +510,10 @@ export class NeuralSynchClient {
     accessToken?: string,
   ): Promise<any | null> {
     try {
-      const url = `${this.baseUrl}/rest/v1/ns_locked_decisions` +
-        `?client_id=eq.${clientId}` +
-        `&decision_ordinal=eq.${ordinal}` +
-        `&limit=1`;
-      const res = await fetch(url, {
-        headers: {
-          // S249: service_role — RLS gates ns_locked_decisions against anon.
-          ...this.userHeaders(accessToken),
-        },
-      });
-      if (!res.ok) {
-        console.error(
-          `[mcp v3.4] ordinal lookup ${res.status}: ${await res.text()}`,
-        );
-        return null;
-      }
-      const arr = await res.json();
-      if (!Array.isArray(arr) || arr.length === 0) return null;
-      const d = arr[0];
+      const d = await this.rpcCall("ns_substrate_decision_v1", {
+        p_client_id: clientId, p_ordinal: ordinal,
+      }, accessToken);
+      if (!d) return null;
       // Synthesize a record-shaped object so consumers can treat ordinal
       // hits and hybrid hits uniformly.
       return {
@@ -873,31 +858,9 @@ export class NeuralSynchClient {
     clientId: string,
     accessToken?: string,
   ): Promise<any | null> {
-    try {
-      const url = `${this.baseUrl}/rest/v1/ns_records` +
-        `?id=eq.${encodeURIComponent(recordId)}` +
-        `&client_id=eq.${encodeURIComponent(clientId)}` +
-        `&select=id,title,body,content_type,domain,status,session_number,tags,attributes,created_at,client_id` +
-        `&limit=1`;
-      const res = await fetch(url, {
-        headers: {
-          // service_role — RLS gates ns_records against anon.
-          ...this.userHeaders(accessToken),
-        },
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`ns_records fetch ${res.status}: ${text}`);
-      }
-      const rows = await res.json();
-      if (!Array.isArray(rows) || rows.length === 0) return null;
-      return rows[0];
-    } catch (error) {
-      console.error("[mcp v3.5] Record fetch by id failed:", error);
-      throw new Error(
-        `Failed to fetch ns_records row: ${(error as Error).message}`,
-      );
-    }
+    return await this.rpcCall("ns_substrate_record_v1", {
+      p_client_id: clientId, p_record_id: recordId,
+    }, accessToken);
   }
 
   // ─── Memory stats (fixed table reference) ────────────────────────────
@@ -905,44 +868,26 @@ export class NeuralSynchClient {
     clientId: string = "viralbrain",
     accessToken?: string,
   ): Promise<any> {
+    const unknown = (state: string, error: string) => ({
+      state, error, client_id: clientId, timestamp: new Date().toISOString(),
+      locked_decisions: null, memory_records: null, ns_records: null, session_writebacks: null,
+    });
     try {
-      const queries = [
-        `${this.baseUrl}/rest/v1/ns_locked_decisions?client_id=eq.${clientId}&select=id`,
-        `${this.baseUrl}/rest/v1/ns_records?client_id=eq.${clientId}&select=id`,
-        `${this.baseUrl}/rest/v1/ns_session_writebacks?client_id=eq.${clientId}&select=id`,
-      ];
-      const responses = await Promise.all(
-        queries.map((url) =>
-          fetch(url, {
-            headers: {
-              // S249: service_role — RLS gates these tables against anon.
-              ...this.userHeaders(accessToken),
-              "Prefer": "count=exact",
-              "Range-Unit": "items",
-              "Range": "0-0",
-            },
-          })
-        ),
-      );
-      const counts = responses.map((r) => {
-        const cr = r.headers.get("Content-Range");
-        if (!cr) return 0;
-        const total = cr.split("/")[1];
-        return total && total !== "*" ? parseInt(total, 10) : 0;
+      const res = await fetch(`${this.baseUrl}/rest/v1/rpc/ns_substrate_stats_v1`, {
+        method: "POST",
+        headers: { ...this.userHeaders(accessToken), "Content-Type": "application/json" },
+        body: JSON.stringify({ p_client_id: clientId }),
       });
-      return {
-        locked_decisions: counts[0] ?? 0,
-        memory_records: counts[1] ?? 0,
-        ns_records: counts[1] ?? 0,
-        session_writebacks: counts[2] ?? 0,
-        client_id: clientId,
-        timestamp: new Date().toISOString(),
-      };
+      if (!res.ok) return unknown(res.status === 401 || res.status === 403 ? "access_denied" : "upstream_error", `HTTP ${res.status}`);
+      const stats = await res.json();
+      const counts = [stats.ns_records, stats.session_writebacks, stats.locked_decisions];
+      if (!["verified", "no_records"].includes(stats.state) || !counts.every(n => Number.isSafeInteger(n) && n >= 0) ||
+        (stats.state === "no_records") !== counts.every(n => n === 0)) {
+        return unknown("upstream_error", "Invalid statistics response");
+      }
+      return stats;
     } catch (error) {
-      console.error("[mcp v3.4] Memory stats failed:", error);
-      throw new Error(
-        `Failed to get memory stats: ${(error as Error).message}`,
-      );
+      return unknown(accessToken ? "upstream_error" : "access_denied", accessToken ? "Statistics unavailable" : "Authentication required");
     }
   }
 }

@@ -10,6 +10,7 @@ export interface MCPPrincipal {
   email?: string;
   accessToken: string;
   tenantRoles: ReadonlyMap<string, string>;
+  substrateRoles?: ReadonlyMap<string, string>;
 }
 
 export class MCPAuthError extends Error {
@@ -86,11 +87,27 @@ export async function authenticateMCPRequest(
   // still gates every memory/custody tool in bindToolArguments; the Personal
   // endpoint separately verifies current session, OAuth client and entitlement.
 
+  const substrateRoles = new Map<string, string>();
+  if (tenantRoles.size) {
+    const resolved = await fetcher(`${baseUrl}/rest/v1/rpc/ns_substrate_memberships_v1`, {
+      method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: "{}",
+    });
+    if (!resolved.ok) throw new MCPAuthError(403, "Canonical substrate membership unavailable.");
+    const aliases = await resolved.json();
+    if (!Array.isArray(aliases)) throw new MCPAuthError(403, "Invalid substrate membership response.");
+    for (const row of aliases) {
+      if (typeof row.identifier !== "string" || typeof row.role !== "string") {
+        throw new MCPAuthError(403, "Invalid substrate membership response.");
+      }
+      substrateRoles.set(row.identifier, row.role);
+    }
+  }
   return {
     userId: user.id,
     email: typeof user.email === "string" ? user.email : undefined,
     accessToken,
     tenantRoles,
+    substrateRoles,
   };
 }
 
@@ -143,7 +160,8 @@ export function bindToolArguments(
     !derivesCustodyScope &&
     !["personal_capability", "personal_result"].includes(toolName)
   ) {
-    if (!principal.tenantRoles.has(requested)) {
+    const roles = toolName.startsWith("custody_") ? principal.tenantRoles : principal.substrateRoles ?? principal.tenantRoles;
+    if (!roles.has(requested)) {
       throw new MCPAuthError(
         403,
         `The authenticated identity is not authorized for tenant ${requested}.`,
