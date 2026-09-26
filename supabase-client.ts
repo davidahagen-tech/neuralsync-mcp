@@ -885,44 +885,26 @@ export class NeuralSynchClient {
     clientId: string = "viralbrain",
     accessToken?: string,
   ): Promise<any> {
+    const unknown = (state: string, error: string) => ({
+      state, error, client_id: clientId, timestamp: new Date().toISOString(),
+      locked_decisions: null, memory_records: null, ns_records: null, session_writebacks: null,
+    });
     try {
-      const queries = [
-        `${this.baseUrl}/rest/v1/ns_locked_decisions?client_id=eq.${clientId}&select=id`,
-        `${this.baseUrl}/rest/v1/ns_records?client_id=eq.${clientId}&select=id`,
-        `${this.baseUrl}/rest/v1/ns_session_writebacks?client_id=eq.${clientId}&select=id`,
-      ];
-      const responses = await Promise.all(
-        queries.map((url) =>
-          fetch(url, {
-            headers: {
-              // S249: service_role — RLS gates these tables against anon.
-              ...this.userHeaders(accessToken),
-              "Prefer": "count=exact",
-              "Range-Unit": "items",
-              "Range": "0-0",
-            },
-          })
-        ),
-      );
-      const counts = responses.map((r) => {
-        const cr = r.headers.get("Content-Range");
-        if (!cr) return 0;
-        const total = cr.split("/")[1];
-        return total && total !== "*" ? parseInt(total, 10) : 0;
+      const res = await fetch(`${this.baseUrl}/rest/v1/rpc/ns_substrate_stats_v1`, {
+        method: "POST",
+        headers: { ...this.userHeaders(accessToken), "Content-Type": "application/json" },
+        body: JSON.stringify({ p_client_id: clientId }),
       });
-      return {
-        locked_decisions: counts[0] ?? 0,
-        memory_records: counts[1] ?? 0,
-        ns_records: counts[1] ?? 0,
-        session_writebacks: counts[2] ?? 0,
-        client_id: clientId,
-        timestamp: new Date().toISOString(),
-      };
+      if (!res.ok) return unknown(res.status === 401 || res.status === 403 ? "access_denied" : "upstream_error", `HTTP ${res.status}`);
+      const stats = await res.json();
+      const counts = [stats.ns_records, stats.session_writebacks, stats.locked_decisions];
+      if (!["verified", "no_records"].includes(stats.state) || !counts.every(n => Number.isSafeInteger(n) && n >= 0) ||
+        (stats.state === "no_records") !== counts.every(n => n === 0)) {
+        return unknown("upstream_error", "Invalid statistics response");
+      }
+      return stats;
     } catch (error) {
-      console.error("[mcp v3.4] Memory stats failed:", error);
-      throw new Error(
-        `Failed to get memory stats: ${(error as Error).message}`,
-      );
+      return unknown(accessToken ? "upstream_error" : "access_denied", accessToken ? "Statistics unavailable" : "Authentication required");
     }
   }
 }

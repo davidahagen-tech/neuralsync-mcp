@@ -370,17 +370,19 @@ export class MemoryToolHandler {
         text: JSON.stringify(
           {
             client_id: clientId,
-            memory_system_health: "operational",
+            memory_system_health: ["verified", "no_records"].includes(stats.state) ? "operational" : stats.state,
+            statistics_state: stats.state,
+            canonical_identity: stats.identity ?? null,
+            error: stats.error ?? null,
             statistics: {
               locked_decisions: stats.locked_decisions,
               memory_records: stats.memory_records,
               ns_records: stats.ns_records,
               session_writebacks: stats.session_writebacks,
-              total_artifacts: stats.locked_decisions + stats.ns_records +
-                stats.session_writebacks,
+              total_artifacts: ["verified", "no_records"].includes(stats.state) ? stats.locked_decisions + stats.ns_records + stats.session_writebacks : null,
             },
             timestamp: stats.timestamp,
-            anti_amnesia_status: stats.locked_decisions > 0
+            anti_amnesia_status: !["verified", "no_records"].includes(stats.state) ? "unknown" : stats.locked_decisions > 0
               ? "active"
               : "initializing",
           },
