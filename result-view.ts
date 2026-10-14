@@ -31,9 +31,15 @@ export const RESULT_HTML = `<!doctype html>
 <script>
 const statusEl=document.getElementById('status'), resultEl=document.getElementById('result'), refresh=document.getElementById('refresh'), download=document.getElementById('download');
 const WORKFLOW_LOGO=${JSON.stringify(WORKFLOW_LOGO)};
-let seq=0, pending=new Map(), locator=null, busy=false, current=null, ready=false;
+let seq=0, pending=new Map(), locator=null, busy=false, current=null, ready=false, hostCapabilities={};
 function send(method,params){parent.postMessage({jsonrpc:'2.0',method,params},'*')}
 function rpc(method,params){return new Promise((resolve,reject)=>{const id=++seq;const timer=setTimeout(()=>{pending.delete(id);reject(new Error('The host did not complete this read. Use Recheck and recover.'))},45000);pending.set(id,{resolve,reject,timer});parent.postMessage({jsonrpc:'2.0',id,method,params},'*')})}
+async function downloadThroughHost(name,type,blob){
+ if(!hostCapabilities.downloadFile)throw Error('This host does not support file downloads. The verified document remains saved; download is unavailable here.');
+ const result=await rpc('ui/download-file',{contents:[{type:'resource',resource:{uri:'file:///'+name,mimeType:type,blob}}]});
+ if(!result||result.isError)throw Error('The host declined or could not complete the download. Your saved document is unchanged.');
+ statusEl.textContent='Verified document sent to the host download handler. Check the host download prompt or downloads.';
+}
 function syncControls(){refresh.disabled=busy||workflowBusy||!locator;for(const id of ['word','pdf'])document.getElementById(id).disabled=busy||workflowBusy||(workflow&&workflow.snapshot.state!=='complete');buildButton.disabled=busy||workflowBusy||workflow?.snapshot.state==='blocked'}
 function clear(message){current=null;resultEl.replaceChildren();download.disabled=true;statusEl.textContent=message}
 function field(parent,key,value,depth=0){if(value===null||value===undefined)return;const section=document.createElement('section');const title=document.createElement('h2');title.textContent=key.replaceAll('_',' ');section.append(title);if(typeof value==='object'&&depth<8){for(const [k,v] of Object.entries(value))field(section,k,v,depth+1)}else{const p=document.createElement('p');p.textContent=typeof value==='string'?value:JSON.stringify(value);section.append(p)}parent.append(section)}
@@ -70,10 +76,10 @@ for(const [id,format,type]of [['word','docx','application/vnd.openxmlformats-off
  if(r.isError||!v||v.concept_id!==locator.concept_id||v.version!==locator.version||v.conversation_key!==locator.conversation_key||v.format!==format||v.encoding!=='base64'||v.media_type!==type||!v.delivery?.complete)throw Error('Document withheld or identity mismatch.');
  const bytes=Uint8Array.from(atob(v.payload),c=>c.charCodeAt(0)),hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))).map(x=>x.toString(16).padStart(2,'0')).join('');
  if(bytes.length!==v.delivery.byte_length||hash!==v.delivery.sha256)throw Error('Document integrity verification failed.');
- const url=URL.createObjectURL(new Blob([bytes],{type})),a=document.createElement('a');a.href=url;a.download='concept-blueprint-v'+locator.version+'.'+format;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);statusEl.textContent='Complete '+format.toUpperCase()+' document verified and downloaded.';
+ await downloadThroughHost('concept-blueprint-v'+locator.version+'.'+format,type,v.payload);
  }catch(e){clear(e.message)}finally{busy=false;syncControls()}
 };
-download.onclick=async()=>{if(!await recover())return;const url=URL.createObjectURL(new Blob([current.payload],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='neuralsynch-'+current.delivery.id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
+download.onclick=async()=>{if(!await recover())return;busy=true;syncControls();try{let binary='';for(const b of new TextEncoder().encode(current.payload))binary+=String.fromCharCode(b);await downloadThroughHost('neuralsynch-'+current.delivery.id+'.json','application/json',btoa(binary))}catch(e){statusEl.textContent=e.message}finally{busy=false;syncControls()}};
 addEventListener('message',event=>{if(event.source!==parent)return;const m=event.data;if(!m||m.jsonrpc!=='2.0')return;
  if(m.id!==undefined&&pending.has(m.id)){const p=pending.get(m.id);clearTimeout(p.timer);pending.delete(m.id);m.error?p.reject(new Error(m.error.message)):p.resolve(m.result);return}
  if(m.method==='ui/notifications/tool-result'&&!locator&&m.params?.structuredContent?.schema==='neuralsynch.workflow.v1'){
@@ -81,5 +87,5 @@ addEventListener('message',event=>{if(event.source!==parent)return;const m=event
  if(m.method==='ui/notifications/tool-result'&&!locator){const v=m.params?.structuredContent;if(v?.conversation_key&&v.delivery?.request_key){locator=v.concept_id?{conversation_key:v.conversation_key,concept_id:v.concept_id,version:v.version}:{conversation_key:v.conversation_key,request_key:v.delivery.request_key};document.getElementById('word').hidden=!v.concept_id;document.getElementById('pdf').hidden=!v.concept_id;refresh.disabled=false;recover()}else if(m.params?.isError)clear('Result withheld or unavailable.');}
  if(m.method==='ui/resource-teardown'){workflowClosed=true;workflowStop=true;clear('Closed');parent.postMessage({jsonrpc:'2.0',id:m.id,result:{}},'*')}
 });
-rpc('ui/initialize',{protocolVersion:'2026-01-26',appInfo:{name:'NeuralSynch complete result',version:'1.0.2'},appCapabilities:{availableDisplayModes:['inline']}}).then(()=>{ready=true;send('ui/notifications/initialized',{});workflow?recoverWorkflow():recover()}).catch(e=>clear(e.message));
+rpc('ui/initialize',{protocolVersion:'2026-01-26',appInfo:{name:'NeuralSynch complete result',version:'1.0.2'},appCapabilities:{availableDisplayModes:['inline']}}).then(result=>{hostCapabilities=result.hostCapabilities||{};ready=true;send('ui/notifications/initialized',{});workflow?recoverWorkflow():recover()}).catch(e=>clear(e.message));
 </script></html>`;
