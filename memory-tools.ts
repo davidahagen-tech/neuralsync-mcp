@@ -1,3 +1,4 @@
+import {callPersonalWorkflow, PERSONAL_WORKFLOW_SCHEMA} from "./personal-workflow.ts";
 import {
   callPersonalResult,
   PERSONAL_RESULT_SCHEMA,
@@ -118,6 +119,8 @@ export class MemoryToolHandler {
   async handleToolCall(tool: MCPToolCall): Promise<MCPToolResult> {
     try {
       switch (tool.name) {
+        case "personal_workflow":
+          return await callPersonalWorkflow(tool.arguments);
         case "personal_result":
           return await callPersonalResult(tool.arguments);
         case "personal_capability":
@@ -1322,4 +1325,5 @@ export const ALL_TOOLS_SCHEMA = [
   ...CUSTODY_TOOLS_SCHEMA,
   ...PERSONAL_TOOLS_SCHEMA,
   PERSONAL_RESULT_SCHEMA,
+  PERSONAL_WORKFLOW_SCHEMA,
 ];

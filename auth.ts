@@ -141,7 +141,7 @@ export function bindToolArguments(
 
   if (
     !derivesCustodyScope &&
-    !["personal_capability", "personal_result"].includes(toolName)
+    !["personal_capability", "personal_result", "personal_workflow"].includes(toolName)
   ) {
     if (!principal.tenantRoles.has(requested)) {
       throw new MCPAuthError(
