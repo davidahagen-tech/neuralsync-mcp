@@ -23,3 +23,19 @@ for(const mode of ['revoked','final-denial','identity-change','corrupt'])Deno.te
 Deno.test('result reader cannot gain tenant scope or accept caller credentials',async()=>{assertThrows(()=>bindToolArguments('memory_read',{},principal));const a=args();assertEquals(JSON.stringify(a).includes('test-oauth'),false);const r=await callPersonalResult({...a,__access_token:'spoof'});assertEquals(r.isError,true)});
 Deno.test('protocol advertises static credential-free view and preserves private result metadata',async()=>{const server=new MCPServer();const r:any=await server.handleRequest({jsonrpc:'2.0',id:1,method:'resources/read',params:{uri:RESULT_RESOURCE.uri}});assertEquals(r.result.contents[0].mimeType,'text/html;profile=mcp-app');assertEquals(r.result.contents[0].text.includes('innerHTML'),false);assertEquals(r.result.contents[0]._meta.ui.csp.connectDomains,[]);
  const old=globalThis.fetch;const f=await fixture();globalThis.fetch=f.fetcher;try{const wire:any=await server.handleRequest({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'personal_result',arguments:{conversation_key:key,request_key:'session:1'}}},principal);assertEquals(wire.result._meta['neuralsynch/result'].payload,f.payload);assertEquals(wire.result.structuredContent.transport_verified,true)}finally{globalThis.fetch=old}});
+for(const format of ['canonical','docx','pdf'])for(const revoke of [false,true,"withheld"])Deno.test(`Concept hosted ${format}, revoked=${revoke}`,async()=>{
+ const id='11111111-1111-4111-8111-111111111111';
+ const a=bindToolArguments('personal_result',{conversation_key:key,concept_id:id,version:1,format},principal);
+ let gets=0;const payload=JSON.stringify({title:'Exact concept',sections:[{heading:'Decision',blocks:[{type:'paragraph',text:'Exact 🌍'}]}]});
+ const bytes=new TextEncoder().encode(format==='canonical'?payload:'Actual binary fixture');
+ const fetcher:typeof fetch=async(_input,init)=>{const b=JSON.parse(String(init?.body));
+  if(b.operation==='session')return Response.json({session:{stateVersion:7}});
+  assertEquals(b.operation,'concept');assertEquals(b.payload.id,id);assertEquals(b.payload.version,1);assertEquals(b.payload.expectedVersion,7);
+  if(b.payload.action==='get'){gets++;return Response.json({workspace:{project:{id},version:{version:1},steps:revoke==="withheld"&&gets===2?[{status:"withheld"}]:[]}},{status:revoke===true&&gets===2?403:200});}
+  assertEquals(b.payload.action,'export');return new Response(bytes,{headers:{'Content-Type':format==='canonical'?'application/json':format==='pdf'?'application/pdf':'application/vnd.openxmlformats-officedocument.wordprocessingml.document'}});
+ };
+ const r=await callPersonalResult(a,fetcher);assertEquals(!!r.isError,!!revoke);assertEquals(gets,2);
+ if(revoke){assertEquals(r._meta,undefined);return;}
+ const v=r._meta?.['neuralsynch/result']as any;assertEquals(v.delivery.byte_length,bytes.length);assertEquals(v.format,format);assertEquals(r.content[0].text.includes('Actual binary'),false);
+ assertEquals(format==='canonical'?v.payload:atob(v.payload),new TextDecoder().decode(bytes));
+});
