@@ -118,7 +118,7 @@ export async function callPersonalWorkflow(
         : "documents";
     };
     if (args.action === "advance" && args.stage === next(w)) {
-      if (conceptWorkflow(w).state === "blocked") {
+      if (conceptWorkflow(w).state === "blocked" || w.steps.some(s=>s.status=== "failed")) {
         throw Error("WORKFLOW_WITHHELD");
       }
       const r = await call(

@@ -118,3 +118,12 @@ Deno.test("workflow rejects identity spoofing and advancing an old version", asy
   );
   assertEquals(r.isError, true);
 });
+Deno.test("withheld terminal assessment cannot be silently retried by automatic advancement", async () => {
+  const f = fixture();
+  f.w.steps.push({ id: "withheld", step: "assess", status: "failed" });
+  const before = await f.call("status");
+  assertEquals((before.structuredContent?.snapshot as any).state, "paused");
+  assertEquals((await f.call("advance", "blueprint:0")).isError, true);
+  assertEquals(f.writes(), 0);
+  assertEquals(f.w.steps[0].status, "failed");
+});

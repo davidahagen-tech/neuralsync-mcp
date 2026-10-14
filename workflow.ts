@@ -41,6 +41,7 @@ export function conceptWorkflow(
     ["canonical", "docx", "pdf"].every((f) => !!w.version.artifacts?.[f]),
   ];
   const next = done.findIndex((v) => !v);
+  const failed = w.steps.some((s) => s.status === "failed");
   const pending = w.steps.some((s) => s.status === "pending");
   const state = denied
     ? "blocked"
@@ -48,7 +49,7 @@ export function conceptWorkflow(
     ? "complete"
     : running
     ? "running"
-    : pending || interrupted
+    : pending || failed || interrupted
     ? "paused"
     : "ready";
   return {
@@ -60,6 +61,8 @@ export function conceptWorkflow(
       ? "Blueprint and documents saved"
       : running
       ? `Building ${labels[next].toLowerCase()}`
+      : failed
+      ? "Answer withheld — review before a new attempt"
       : pending
       ? "A saved step needs recovery"
       : interrupted
@@ -133,7 +136,7 @@ export async function buildBlueprint(port: {
   let w = await port.read();
   for (let n = 0; n < 5; n++) {
     const view = conceptWorkflow(w);
-    if (view.state === "blocked") throw Error(view.activity);
+    if (view.state === "blocked" || w.steps.some(s => s.status === "failed")) throw Error(view.activity);
     port.update(w, false);
     if (view.state === "complete" || port.stopped()) return;
     const before = JSON.stringify(w.steps.map((s) => [s.id, s.status]));

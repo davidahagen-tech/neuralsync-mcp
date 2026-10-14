@@ -35,7 +35,7 @@ let seq=0, pending=new Map(), locator=null, busy=false, current=null, ready=fals
 function send(method,params){parent.postMessage({jsonrpc:'2.0',method,params},'*')}
 function rpc(method,params){return new Promise((resolve,reject)=>{const id=++seq;const timer=setTimeout(()=>{pending.delete(id);reject(new Error('The host did not complete this read. Use Recheck and recover.'))},45000);pending.set(id,{resolve,reject,timer});parent.postMessage({jsonrpc:'2.0',id,method,params},'*')})}
 async function downloadThroughHost(name,type,blob){
- if(!hostCapabilities.downloadFile)throw Error('This host does not support file downloads. The verified document remains saved; download is unavailable here.');
+ if(!hostCapabilities.downloadFile)throw Error('This host does not support file downloads. The verified document remains saved; download is unavailable here. Sign in to your NeuralSynch Control Center, then open Workflows & documents. The desktop app is optional.');
  const result=await rpc('ui/download-file',{contents:[{type:'resource',resource:{uri:'file:///'+name,mimeType:type,blob}}]});
  if(!result||result.isError)throw Error('The host declined or could not complete the download. Your saved document is unchanged.');
  statusEl.textContent='Verified document sent to the host download handler. Check the host download prompt or downloads.';
