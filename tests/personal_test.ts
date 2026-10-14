@@ -1,11 +1,21 @@
 import { assertEquals, assertThrows } from "jsr:@std/assert@^1.0.0";
 import { bindToolArguments } from "../auth.ts";
-import { callPersonalCapability } from "../personal-tools.ts";
+import { callPersonalCapability, PERSONAL_TOOLS_SCHEMA } from "../personal-tools.ts";
 const principal = {
   userId: "u",
   accessToken: "opaque-oauth",
   tenantRoles: new Map<string, string>(),
 };
+Deno.test("Concept Lab is discoverable and transports the unchanged native request", async () => {
+  assertEquals(PERSONAL_TOOLS_SCHEMA[0].inputSchema.properties.operation.enum.includes("concept"),true);
+  const payload = {action:"step",id:"project",version:1,step:"blueprint",request_id:"stable",expectedVersion:4};
+  const args=bindToolArguments("personal_capability",{operation:"concept",conversation_key:"origin-conversation",payload},principal);
+  const result=await callPersonalCapability(args,async(_url,init)=>{
+    assertEquals(JSON.parse(String(init?.body)),{operation:"concept",conversation_key:"origin-conversation",payload});
+    return Response.json({workspace:{version:1},delivery:{complete:true}});
+  });
+  assertEquals(result.isError,false);
+});
 Deno.test("Personal principal gains no organizational memory/custody permission", () => {
   assertThrows(() => bindToolArguments("memory_read", {}, principal));
   assertThrows(() => bindToolArguments("custody_store", {}, principal));
