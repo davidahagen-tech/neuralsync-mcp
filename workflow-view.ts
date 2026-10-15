@@ -5,7 +5,7 @@ const tracker=document.getElementById('workflow'), buildButton=document.getEleme
 function workflowText(parent,tag,text,className){const el=document.createElement(tag);el.textContent=text;if(className)el.className=className;parent.append(el);return el}
 function renderWorkflowTracker(s,running=false,message){
 tracker.style.setProperty('--ns-workflow-count',Math.max(1,Math.min(6,s.milestones.length)));tracker.hidden=false;tracker.dataset.state=running?'running':s.state;tracker.replaceChildren();
- const mark=document.createElement('div');mark.className='ns-workflow-wave';mark.setAttribute('aria-hidden','true');const img=document.createElement('img');img.src=WORKFLOW_LOGO;img.alt='';img.width=64;img.height=42;mark.append(img);tracker.append(mark);
+ const mark=document.createElement('div');mark.className='ns-workflow-wave';mark.setAttribute('aria-hidden','true');const img=document.createElement('img');img.src=WORKFLOW_LOGO;img.alt='';img.width=64;img.height=42;img.style.objectFit='contain';mark.append(img);tracker.append(mark);
  const body=document.createElement('div');body.className='ns-workflow-body';tracker.append(body);const head=document.createElement('div');head.className='ns-workflow-header';body.append(head);workflowText(head,'strong',s.title);workflowText(head,'small',s.recovery);
  const status=workflowText(body,'p',message||(running?'Building '+s.milestones.find(m=>m.state!=='complete')?.label:s.activity),'ns-workflow-status');status.setAttribute('role','status');status.setAttribute('aria-live','polite');statusEl.textContent=status.textContent;
  const list=document.createElement('ol');list.className='ns-workflow-milestones';body.append(list);let active=false;
