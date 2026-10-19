@@ -10,5 +10,10 @@
   "compilerOptions": {
     "strict": true,
     "lib": ["dom", "deno.ns"]
+  },
+  "deploy": {
+    "org": "davidahagen-tech",
+    "app": "neuralsync-mcp"
   }
 }
+
