@@ -756,8 +756,8 @@ export class NeuralSynchClient {
       p_body_ilike: params.body_ilike ?? null,
       p_since: params.since ?? null,
       p_until: params.until ?? null,
-      p_order: params.order ?? null,
-      p_limit: params.limit ?? null,
+      p_order: params.order ?? "recent",
+      p_limit: params.limit ?? 50,
     }, accessToken);
     return Array.isArray(out) ? out : [];
   }
@@ -866,38 +866,18 @@ export class NeuralSynchClient {
   // ─── Single record by id (S251) — full body, no excerpt ──────────────
   //
   // Returns the complete ns_records row, or null when no such row exists.
-  // null is a definitive negative and callers must surface it as one; the
+  // null means unavailable in the authorized population, not global absence; the
   // defect this replaces was an empty result presented as a successful read.
   async getRecordById(
     recordId: string,
     clientId: string,
     accessToken?: string,
   ): Promise<any | null> {
-    try {
-      const url = `${this.baseUrl}/rest/v1/ns_records` +
-        `?id=eq.${encodeURIComponent(recordId)}` +
-        `&client_id=eq.${encodeURIComponent(clientId)}` +
-        `&select=id,title,body,content_type,domain,status,session_number,tags,attributes,created_at,client_id` +
-        `&limit=1`;
-      const res = await fetch(url, {
-        headers: {
-          // service_role — RLS gates ns_records against anon.
-          ...this.userHeaders(accessToken),
-        },
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`ns_records fetch ${res.status}: ${text}`);
-      }
-      const rows = await res.json();
-      if (!Array.isArray(rows) || rows.length === 0) return null;
-      return rows[0];
-    } catch (error) {
-      console.error("[mcp v3.5] Record fetch by id failed:", error);
-      throw new Error(
-        `Failed to fetch ns_records row: ${(error as Error).message}`,
-      );
-    }
+    // Canonical connector read admission and storage-population resolution.
+    // Direct table RLS/legacy client aliases cannot establish a definitive miss.
+    return await this.rpcCall("ns_connector_record_by_id_v1", {
+      p_client_id: clientId, p_record_id: recordId,
+    }, accessToken);
   }
 
   // ─── Memory stats (fixed table reference) ────────────────────────────

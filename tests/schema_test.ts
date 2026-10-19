@@ -70,7 +70,7 @@ Deno.test('the original 12 memory tools are still exactly 12', () => {
 });
 
 Deno.test('existing tools plus Personal capability, complete result and workflow adapters', () => {
-  assertEquals(ALL_TOOLS_SCHEMA.length, 30);
+  assertEquals(ALL_TOOLS_SCHEMA.length, 32);
   assertEquals(MEMORY_TOOLS_SCHEMA.length + RECORD_TOOLS_SCHEMA.length + CUSTODY_TOOLS_SCHEMA.length, 27);
   assertEquals(CUSTODY_TOOLS_SCHEMA.length, 14);
 });

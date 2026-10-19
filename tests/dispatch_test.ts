@@ -102,7 +102,7 @@ Deno.test("isRecordId accepts a UUID and rejects a client_id", () => {
 
 Deno.test("every advertised tool has a dispatch case — none falls through", async () => {
   const stub = stubFetch([
-    ["/rest/v1/ns_records", [RECORD_ROW]],
+    ["/rest/v1/rpc/ns_connector_record_by_id_v1", RECORD_ROW],
     ["/functions/v1/neuralsync-custody", {
       ok: true,
       result: { verified: true, version_id: "v" },
@@ -168,7 +168,7 @@ Deno.test("an unregistered tool name still reports Unknown tool", async () => {
 // ─── get_record_by_id ──────────────────────────────────────────────────
 
 Deno.test("get_record_by_id returns the FULL body, not an excerpt", async () => {
-  const stub = stubFetch([["/rest/v1/ns_records", [RECORD_ROW]]]);
+  const stub = stubFetch([["/rest/v1/rpc/ns_connector_record_by_id_v1", RECORD_ROW]]);
   try {
     const res = await new MemoryToolHandler().handleToolCall({
       name: "get_record_by_id",
@@ -193,7 +193,7 @@ Deno.test("get_record_by_id returns the FULL body, not an excerpt", async () => 
 });
 
 Deno.test("get_record_by_id fails CLOSED when the record does not exist", async () => {
-  const stub = stubFetch([["/rest/v1/ns_records", []]]);
+  const stub = stubFetch([["/rest/v1/rpc/ns_connector_record_by_id_v1", null]]);
   try {
     const res = await new MemoryToolHandler().handleToolCall({
       name: "get_record_by_id",
@@ -231,7 +231,7 @@ Deno.test("REGRESSION: fetch(UUID) returns the record, not an empty client packe
   // Before the fix this hit retrieve-context-packet with the UUID as a
   // client_id and returned a confident empty packet with no error.
   const stub = stubFetch([
-    ["/rest/v1/ns_records", [RECORD_ROW]],
+    ["/rest/v1/rpc/ns_connector_record_by_id_v1", RECORD_ROW],
     ["/functions/v1/retrieve-context-packet", {
       context_prompt:
         "No locked decisions found. No active records in ns_records yet.",
@@ -298,7 +298,7 @@ Deno.test("BACKWARD COMPAT: fetch(client_id) still returns the memory packet", a
 
 Deno.test("fetch(UUID) for a missing record fails closed rather than returning a packet", async () => {
   const stub = stubFetch([
-    ["/rest/v1/ns_records", []],
+    ["/rest/v1/rpc/ns_connector_record_by_id_v1", null],
     ["/functions/v1/retrieve-context-packet", {
       context_prompt: "should never be reached",
     }],

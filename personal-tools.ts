@@ -14,7 +14,7 @@ export const PERSONAL_TOOLS_SCHEMA = [{
     properties: {
       operation: {
         type: "string",
-        enum: ["session", "invoke", "result", "report", "intake", "save", "concept"],
+        enum: ["session", "invoke", "result", "report", "intake", "save", "concept", "commitment"],
       },
       conversation_key: {
         type: "string",

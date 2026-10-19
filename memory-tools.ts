@@ -1,3 +1,5 @@
+import {callCommitment,COMMITMENT_SCHEMA} from './commitment-tools.ts';
+import {callPersonalCommitment, PERSONAL_COMMITMENT_SCHEMA} from './personal-commitments.ts';
 import {callPersonalWorkflow, PERSONAL_WORKFLOW_SCHEMA} from "./personal-workflow.ts";
 import {
   callPersonalResult,
@@ -119,6 +121,10 @@ export class MemoryToolHandler {
   async handleToolCall(tool: MCPToolCall): Promise<MCPToolResult> {
     try {
       switch (tool.name) {
+        case "commitment":
+          return await callCommitment(tool.arguments);
+        case "personal_commitment":
+          return await callPersonalCommitment(tool.arguments);
         case "personal_workflow":
           return await callPersonalWorkflow(tool.arguments);
         case "personal_result":
@@ -659,7 +665,7 @@ export class MemoryToolHandler {
               record_id: recordId,
               error: "RECORD_NOT_FOUND",
               detail:
-                `No ns_records row exists with id ${recordId}. This is a definitive negative, not an empty substrate.`,
+                `No ns_records row exists with id ${recordId}. The record is unavailable within your authorized substrate population. This does not establish global absence.`,
             },
             null,
             2,
@@ -1326,4 +1332,6 @@ export const ALL_TOOLS_SCHEMA = [
   ...PERSONAL_TOOLS_SCHEMA,
   PERSONAL_RESULT_SCHEMA,
   PERSONAL_WORKFLOW_SCHEMA,
+  PERSONAL_COMMITMENT_SCHEMA,
+  COMMITMENT_SCHEMA,
 ];
