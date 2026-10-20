@@ -1,4 +1,5 @@
 import { PERSONAL_COMMITMENT_SCHEMA } from "./personal-commitments.ts";
+import { TASK_SECRETARY_CONTRACT } from "./task-secretary-contract.ts";
 import type { MCPToolResult } from "./memory-tools.ts";
 import {
   DEFAULT_SUPABASE_PUBLISHABLE_KEY,
@@ -9,7 +10,8 @@ export const COMMITMENT_SCHEMA = {
   name: "commitment",
   title: "Organizational Task Secretary",
   description:
-    "Read and update the one permanent Commitment Ledger across qualified ChatGPT, Claude and Codex connections. Server checks current OAuth, tenant membership, Owner pilot and client allowlist on every call. Read relevant tasks before acting. This grants no provider execution, file retrieval, verification or Owner acceptance. Do not infer tasks from ordinary conversation.",
+    "Read and update the one permanent Commitment Ledger across qualified ChatGPT, Claude and Codex connections. Server checks current OAuth, tenant membership, Owner pilot and client allowlist on every call. Read relevant tasks before acting. This grants no provider execution, file retrieval, verification or Owner acceptance. " +
+    TASK_SECRETARY_CONTRACT,
   inputSchema: {
     type: "object",
     additionalProperties: false,
