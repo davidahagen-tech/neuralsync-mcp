@@ -289,7 +289,8 @@ export class MCPServer {
 
     if (
       request.method === "GET" &&
-      url.pathname === "/.well-known/oauth-protected-resource"
+      (url.pathname === "/.well-known/oauth-protected-resource" ||
+        url.pathname === "/.well-known/oauth-protected-resource/mcp")
     ) {
       return new Response(
         JSON.stringify(
@@ -309,6 +310,26 @@ export class MCPServer {
       );
     }
 
+    // OAuth clients probe the protected transport with GET before login.
+    // A public 200 server-info document here is not resource metadata and
+    // prevents clients such as Codex from discovering the authorization server.
+    if (request.method === "GET" && url.pathname === "/mcp") {
+      try {
+        await authenticateMCPRequest(request);
+      } catch (error) {
+        if (!(error instanceof MCPAuthError)) throw error;
+        return new Response(JSON.stringify({ error: "unauthorized" }), {
+          status: error.status,
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "application/json",
+            "WWW-Authenticate":
+              `Bearer resource_metadata="${resourceMetadataUrl}"`,
+          },
+        });
+      }
+    }
+
     if (request.method === "GET" && isMcpPath) {
       return new Response(
         JSON.stringify(
@@ -320,7 +341,7 @@ export class MCPServer {
             transport: "streamable-http",
             endpoints: {
               "GET /": "Server information",
-              "GET /mcp": "Server information (alias)",
+              "GET /mcp": "Authenticated server information",
               "POST /": "MCP JSON-RPC requests (JSON or SSE)",
               "POST /mcp":
                 "MCP JSON-RPC requests (alias for OpenAI connector convention)",

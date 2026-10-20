@@ -115,6 +115,26 @@ Deno.test("OAuth protected-resource metadata advertises the canonical /mcp resou
   assertEquals(body.authorization_servers.length, 1);
 });
 
+Deno.test("GET transport discovery challenges before serving a non-metadata document", async () => {
+  const server = new MCPServer();
+  const response = await server.handleHTTP(new Request("https://example.test/mcp"));
+  assertEquals(response.status, 401);
+  assertEquals(
+    response.headers.get("WWW-Authenticate"),
+    'Bearer resource_metadata="https://example.test/.well-known/oauth-protected-resource"',
+  );
+  const root = await server.handleHTTP(new Request("https://example.test/"));
+  assertEquals(root.status, 200);
+  for (const path of [
+    "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-protected-resource/mcp",
+  ]) {
+    const metadata = await server.handleHTTP(new Request(`https://example.test${path}`));
+    assertEquals(metadata.status, 200);
+    assertEquals((await metadata.json()).resource, "https://example.test/mcp");
+  }
+});
+
 Deno.test("OAuth consent route is additive and does not expose server credentials", async () => {
   const priorUrl = Deno.env.get("SUPABASE_URL");
   const priorAnon = Deno.env.get("SUPABASE_ANON_KEY");
