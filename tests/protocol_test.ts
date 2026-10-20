@@ -221,3 +221,45 @@ Deno.test("no custody key is required to LIST tools — only to call them", asyn
   });
   assertEquals(res.result.tools.length, 32);
 });
+
+Deno.test("authenticated streamable HTTP initialization acknowledges notifications without a response stream", async () => {
+  const originalFetch = globalThis.fetch;
+  let authChecks = 0;
+  globalThis.fetch = ((url: RequestInfo | URL) => {
+    if (String(url).endsWith('/auth/v1/user')) {
+      authChecks++;
+      return Promise.resolve(Response.json({ id: 'fixture-owner' }));
+    }
+    if (String(url).includes('/rest/v1/ns_tenant_memberships?')) {
+      return Promise.resolve(Response.json([{ client_id: 'fixture', role: 'owner' }]));
+    }
+    throw new Error('Unexpected outbound request');
+  }) as typeof fetch;
+  try {
+    const server = new MCPServer();
+    const headers = { Authorization: 'Bearer synthetic-test-only', Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json' };
+    const initialized = await server.handleHTTP(new Request('https://example.test/mcp', {
+      method: 'POST', headers, body: JSON.stringify({jsonrpc:'2.0', id:1, method:'initialize'}),
+    }));
+    assertEquals(initialized.status, 200);
+    assert((await initialized.text()).includes('"id":1'));
+    for (const accept of ['application/json', 'application/json, text/event-stream']) {
+      const notification = await server.handleHTTP(new Request('https://example.test/mcp', {
+        method: 'POST', headers: {...headers, Accept:accept},
+        body:JSON.stringify({jsonrpc:'2.0',method:'notifications/initialized'}),
+      }));
+      assertEquals(notification.status, 202);
+      assertEquals(await notification.text(), '');
+      assertEquals(notification.headers.get('Content-Type'), null);
+    }
+    const stream = await server.handleHTTP(new Request('https://example.test/mcp', {headers}));
+    assertEquals(stream.status, 405);
+    assertEquals(await stream.text(), '');
+    const tools = await server.handleHTTP(new Request('https://example.test/mcp', {
+      method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:2,method:'tools/list'}),
+    }));
+    assertEquals(tools.status,200);
+    assert((await tools.text()).includes('commitment'));
+    assertEquals(authChecks,5);
+  } finally { globalThis.fetch = originalFetch; }
+});

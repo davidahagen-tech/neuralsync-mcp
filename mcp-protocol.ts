@@ -328,6 +328,12 @@ export class MCPServer {
           },
         });
       }
+      // This transport replies on POST and does not offer a standalone SSE
+      // stream. A JSON info document is not a valid streaming GET response.
+      return new Response(null, {
+        status: 405,
+        headers: { ...corsHeaders, Allow: "POST, OPTIONS" },
+      });
     }
 
     if (request.method === "GET" && isMcpPath) {
@@ -341,7 +347,7 @@ export class MCPServer {
             transport: "streamable-http",
             endpoints: {
               "GET /": "Server information",
-              "GET /mcp": "Authenticated server information",
+              "GET /mcp": "OAuth challenge; standalone SSE is not supported",
               "POST /": "MCP JSON-RPC requests (JSON or SSE)",
               "POST /mcp":
                 "MCP JSON-RPC requests (alias for OpenAI connector convention)",
@@ -382,6 +388,15 @@ export class MCPServer {
           if (response !== null) {
             responses.push(response);
           }
+        }
+
+        // Notifications have no JSON-RPC response. A 200 empty SSE stream
+        // terminates strict clients during notifications/initialized.
+        if (responses.length === 0) {
+          return new Response(null, {
+            status: 202,
+            headers: corsHeaders,
+          });
         }
 
         if (wantsSSE) {
