@@ -1,3 +1,4 @@
+import { assignmentIndication } from "./assignment-inbox.ts";
 import { RESULT_RESOURCE, resultResourceContents } from "./result-view.ts";
 // MCP (Model Context Protocol) implementation for NeuralSynch — v1.0.1 (S187 close)
 // Handles JSON-RPC 2.0 protocol for tool discovery and execution
@@ -190,7 +191,7 @@ export class MCPServer {
         jsonrpc: "2.0",
         id: request.id,
         result: {
-          content: result.content,
+          content: [...result.content, ...await assignmentIndication(name, boundArgs, principal)],
           ...(result.structuredContent
             ? { structuredContent: result.structuredContent }
             : {}),
@@ -289,7 +290,8 @@ export class MCPServer {
 
     if (
       request.method === "GET" &&
-      url.pathname === "/.well-known/oauth-protected-resource"
+      (url.pathname === "/.well-known/oauth-protected-resource" ||
+        url.pathname === "/.well-known/oauth-protected-resource/mcp")
     ) {
       return new Response(
         JSON.stringify(
@@ -309,6 +311,32 @@ export class MCPServer {
       );
     }
 
+    // OAuth clients probe the protected transport with GET before login.
+    // A public 200 server-info document here is not resource metadata and
+    // prevents clients such as Codex from discovering the authorization server.
+    if (request.method === "GET" && url.pathname === "/mcp") {
+      try {
+        await authenticateMCPRequest(request);
+      } catch (error) {
+        if (!(error instanceof MCPAuthError)) throw error;
+        return new Response(JSON.stringify({ error: "unauthorized" }), {
+          status: error.status,
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "application/json",
+            "WWW-Authenticate":
+              `Bearer resource_metadata="${resourceMetadataUrl}"`,
+          },
+        });
+      }
+      // This transport replies on POST and does not offer a standalone SSE
+      // stream. A JSON info document is not a valid streaming GET response.
+      return new Response(null, {
+        status: 405,
+        headers: { ...corsHeaders, Allow: "POST, OPTIONS" },
+      });
+    }
+
     if (request.method === "GET" && isMcpPath) {
       return new Response(
         JSON.stringify(
@@ -320,7 +348,7 @@ export class MCPServer {
             transport: "streamable-http",
             endpoints: {
               "GET /": "Server information",
-              "GET /mcp": "Server information (alias)",
+              "GET /mcp": "OAuth challenge; standalone SSE is not supported",
               "POST /": "MCP JSON-RPC requests (JSON or SSE)",
               "POST /mcp":
                 "MCP JSON-RPC requests (alias for OpenAI connector convention)",
@@ -361,6 +389,15 @@ export class MCPServer {
           if (response !== null) {
             responses.push(response);
           }
+        }
+
+        // Notifications have no JSON-RPC response. A 200 empty SSE stream
+        // terminates strict clients during notifications/initialized.
+        if (responses.length === 0) {
+          return new Response(null, {
+            status: 202,
+            headers: corsHeaders,
+          });
         }
 
         if (wantsSSE) {

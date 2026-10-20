@@ -1,10 +1,12 @@
 import { callPersonalCapability } from "./personal-tools.ts";
+import { TASK_SECRETARY_CONTRACT } from "./task-secretary-contract.ts";
 import type { MCPToolResult } from "./memory-tools.ts";
 export const PERSONAL_COMMITMENT_SCHEMA = {
   name: "personal_commitment",
   title: "NeuralSynch Task Secretary",
   description:
-    "Read and update explicitly authorized durable assignments. Stable task IDs survive conversations. Use list/get before acting; reuse request_id on retries. A task grants no execution permission. External AI may report completion and evidence; only Owner review may verify or accept. The same ledger is available to explicitly qualified integrations for this Owner; unrelated histories and result files are not shared. This tool does not govern independent host actions. No automatic task inference or background execution.",
+    "Read and update explicitly authorized durable assignments. Stable task IDs survive conversations. Use list/get before acting; reuse request_id on retries. A task grants no execution permission. External AI may report completion and evidence; only Owner review may verify or accept. The same ledger is available to explicitly qualified integrations for this Owner; unrelated histories and result files are not shared. This tool does not govern independent host actions or authorize background execution. " +
+    TASK_SECRETARY_CONTRACT,
   inputSchema: {
     type: "object",
     additionalProperties: false,

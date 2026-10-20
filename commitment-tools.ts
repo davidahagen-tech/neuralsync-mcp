@@ -1,4 +1,5 @@
 import { PERSONAL_COMMITMENT_SCHEMA } from "./personal-commitments.ts";
+import { TASK_SECRETARY_CONTRACT } from "./task-secretary-contract.ts";
 import type { MCPToolResult } from "./memory-tools.ts";
 import {
   DEFAULT_SUPABASE_PUBLISHABLE_KEY,
@@ -9,7 +10,8 @@ export const COMMITMENT_SCHEMA = {
   name: "commitment",
   title: "Organizational Task Secretary",
   description:
-    "Read and update the one permanent Commitment Ledger across qualified ChatGPT, Claude and Codex connections. Server checks current OAuth, tenant membership, Owner pilot and client allowlist on every call. Read relevant tasks before acting. This grants no provider execution, file retrieval, verification or Owner acceptance. Do not infer tasks from ordinary conversation.",
+    "Read and update the one permanent Commitment Ledger across qualified ChatGPT, Claude and Codex connections. Server checks current OAuth, tenant membership, Owner pilot and client allowlist on every call. Read relevant tasks before acting. This grants no provider execution, file retrieval, verification or Owner acceptance. " +
+    TASK_SECRETARY_CONTRACT,
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -22,15 +24,15 @@ export const COMMITMENT_SCHEMA = {
       payload: {
         ...PERSONAL_COMMITMENT_SCHEMA.inputSchema.properties.payload,
         description:
-          "Metadata actions: list/get/create/transition/evidence/depend/uncertain. Read current version before mutation. Writes require request_id; existing writes require expected_version. No execution, file retrieval, verification, acceptance or deletion.",
-        properties: Object.fromEntries(
+          "Metadata actions: list/get/create/transition/evidence/depend/uncertain/inbox/acknowledge. Acknowledge requires id, delivery_id and request_id; receipt grants no execution authority. Read current version before mutation. Writes require request_id; existing writes require expected_version. No execution, file retrieval, verification, acceptance or deletion.",
+        properties: {delivery_id: {type: "string", description: "Exact durable inbox delivery ID for acknowledgment."}, ...Object.fromEntries(
           Object.entries(
             PERSONAL_COMMITMENT_SCHEMA.inputSchema.properties.payload
               .properties,
           ).filter(([key]) =>
             !["prompt", "memory_id", "expectedVersion"].includes(key)
           ),
-        ),
+        )},
       },
     },
     required: ["client_id", "payload"],
@@ -48,7 +50,7 @@ export async function callCommitment(
   const p = args.payload as Record<string, unknown>;
   if (
     !p ||
-    !["list", "get", "create", "transition", "evidence", "depend", "uncertain"]
+    !["list", "get", "create", "transition", "evidence", "depend", "uncertain", "inbox", "acknowledge"]
       .includes(String(p.action)) ||
     (p.action === "transition" &&
       !["in_progress", "blocked", "reported_complete"].includes(
