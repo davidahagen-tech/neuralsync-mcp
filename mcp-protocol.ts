@@ -1,3 +1,4 @@
+import { assignmentIndication } from "./assignment-inbox.ts";
 import { RESULT_RESOURCE, resultResourceContents } from "./result-view.ts";
 // MCP (Model Context Protocol) implementation for NeuralSynch — v1.0.1 (S187 close)
 // Handles JSON-RPC 2.0 protocol for tool discovery and execution
@@ -190,7 +191,7 @@ export class MCPServer {
         jsonrpc: "2.0",
         id: request.id,
         result: {
-          content: result.content,
+          content: [...result.content, ...await assignmentIndication(name, boundArgs, principal)],
           ...(result.structuredContent
             ? { structuredContent: result.structuredContent }
             : {}),

@@ -24,15 +24,15 @@ export const COMMITMENT_SCHEMA = {
       payload: {
         ...PERSONAL_COMMITMENT_SCHEMA.inputSchema.properties.payload,
         description:
-          "Metadata actions: list/get/create/transition/evidence/depend/uncertain. Read current version before mutation. Writes require request_id; existing writes require expected_version. No execution, file retrieval, verification, acceptance or deletion.",
-        properties: Object.fromEntries(
+          "Metadata actions: list/get/create/transition/evidence/depend/uncertain/inbox/acknowledge. Acknowledge requires id, delivery_id and request_id; receipt grants no execution authority. Read current version before mutation. Writes require request_id; existing writes require expected_version. No execution, file retrieval, verification, acceptance or deletion.",
+        properties: {delivery_id: {type: "string", description: "Exact durable inbox delivery ID for acknowledgment."}, ...Object.fromEntries(
           Object.entries(
             PERSONAL_COMMITMENT_SCHEMA.inputSchema.properties.payload
               .properties,
           ).filter(([key]) =>
             !["prompt", "memory_id", "expectedVersion"].includes(key)
           ),
-        ),
+        )},
       },
     },
     required: ["client_id", "payload"],
@@ -50,7 +50,7 @@ export async function callCommitment(
   const p = args.payload as Record<string, unknown>;
   if (
     !p ||
-    !["list", "get", "create", "transition", "evidence", "depend", "uncertain"]
+    !["list", "get", "create", "transition", "evidence", "depend", "uncertain", "inbox", "acknowledge"]
       .includes(String(p.action)) ||
     (p.action === "transition" &&
       !["in_progress", "blocked", "reported_complete"].includes(
