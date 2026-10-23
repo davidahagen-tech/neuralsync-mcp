@@ -1,6 +1,12 @@
-import {callCommitment,COMMITMENT_SCHEMA} from './commitment-tools.ts';
-import {callPersonalCommitment, PERSONAL_COMMITMENT_SCHEMA} from './personal-commitments.ts';
-import {callPersonalWorkflow, PERSONAL_WORKFLOW_SCHEMA} from "./personal-workflow.ts";
+import { callCommitment, COMMITMENT_SCHEMA } from "./commitment-tools.ts";
+import {
+  callPersonalCommitment,
+  PERSONAL_COMMITMENT_SCHEMA,
+} from "./personal-commitments.ts";
+import {
+  callPersonalWorkflow,
+  PERSONAL_WORKFLOW_SCHEMA,
+} from "./personal-workflow.ts";
 import {
   callPersonalResult,
   PERSONAL_RESULT_SCHEMA,
@@ -149,6 +155,8 @@ export class MemoryToolHandler {
           return await this.handleMemoryGetBySession(tool.arguments);
         case "memory_filter":
           return await this.handleMemoryFilter(tool.arguments);
+        case "memory_session":
+          return await this.handleMemorySession(tool.arguments);
         case "memory_current_session":
           return await this.handleMemoryCurrentSession(tool.arguments);
         case "search":
@@ -236,11 +244,46 @@ export class MemoryToolHandler {
     };
   }
 
+  private async handleMemorySession(args: any): Promise<MCPToolResult> {
+    if (
+      !["open", "recover", "close"].includes(args.operation) ||
+      typeof args.conversation_key !== "string" ||
+      !args.conversation_key.trim() ||
+      args.conversation_key !== args.conversation_key.trim() ||
+      args.conversation_key.length > 200 ||
+      (args.session_id !== undefined && (typeof args.session_id !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          args.session_id,
+        )))
+    ) {
+      throw new Error("Invalid working session request");
+    }
+    const result = await this.client.workingSession(
+      args.client_id || "viralbrain",
+      args.operation,
+      args.conversation_key,
+      args.session_id,
+      args.__access_token,
+    );
+    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+  }
+
   // ─── memory_write ────────────────────────────────────────────────────
 
   private async handleMemoryWrite(args: any): Promise<MCPToolResult> {
+    if (
+      !Number.isSafeInteger(args.session_number) || args.session_number < 1 ||
+      args.session_number > 1000000
+    ) {
+      throw new Error(
+        "Use the canonical session_number returned by memory_session; no client-generated number is permitted",
+      );
+    }
     const writeback: SessionWriteback = {
-      session_number: args.session_number || Date.now(),
+      session_number: args.session_number,
+      ...(args.working_session_id !== undefined
+        ? { working_session_id: args.working_session_id }
+        : {}),
       client_id: args.client_id || "viralbrain",
       objective: args.objective || "No objective specified",
       outcome_summary: args.outcome_summary || "No summary provided",
@@ -370,7 +413,10 @@ export class MemoryToolHandler {
         text: JSON.stringify(
           {
             client_id: clientId,
-            memory_system_health: ["verified", "no_records"].includes(stats.state) ? "operational" : stats.state,
+            memory_system_health:
+              ["verified", "no_records"].includes(stats.state)
+                ? "operational"
+                : stats.state,
             statistics_state: stats.state,
             canonical_identity: stats.identity ?? null,
             error: stats.error ?? null,
@@ -379,12 +425,18 @@ export class MemoryToolHandler {
               memory_records: stats.memory_records,
               ns_records: stats.ns_records,
               session_writebacks: stats.session_writebacks,
-              total_artifacts: ["verified", "no_records"].includes(stats.state) ? stats.locked_decisions + stats.ns_records + stats.session_writebacks : null,
+              total_artifacts: ["verified", "no_records"].includes(stats.state)
+                ? stats.locked_decisions + stats.ns_records +
+                  stats.session_writebacks
+                : null,
             },
             timestamp: stats.timestamp,
-            anti_amnesia_status: !["verified", "no_records"].includes(stats.state) ? "unknown" : stats.locked_decisions > 0
-              ? "active"
-              : "initializing",
+            anti_amnesia_status:
+              !["verified", "no_records"].includes(stats.state)
+                ? "unknown"
+                : stats.locked_decisions > 0
+                ? "active"
+                : "initializing",
           },
           null,
           2,
@@ -803,7 +855,7 @@ export const MEMORY_TOOLS_SCHEMA = [
         session_number: {
           type: "number",
           description:
-            "Target session number (optional, auto-increments if not provided)",
+            "Legacy compatibility field; reading context does not open or advance a working session. Use memory_session.",
         },
       },
     },
@@ -825,7 +877,13 @@ export const MEMORY_TOOLS_SCHEMA = [
         },
         session_number: {
           type: "number",
-          description: "Session number for this writeback",
+          description:
+            "Canonical number returned by memory_session. memory_current_session is a tenant high-water mark, not this conversation identity.",
+        },
+        working_session_id: {
+          type: "string",
+          description:
+            "Canonical session_id returned by memory_session. Supply on every lifecycle-bound write, including writes while newer sessions exist.",
         },
         objective: {
           type: "string",
@@ -1327,6 +1385,40 @@ export const RECORD_TOOLS_SCHEMA = [
  * full-record retrieval, plus the 14 artifact-custody tools (4 read-only from
  * S251, 8 governed write/read tools from S252 and 2 direct-upload tools). 27 total.
  */
+export const SESSION_TOOLS_SCHEMA = [
+  {
+    name: "memory_session",
+    description:
+      "Open, recover or close a canonical working session. At a genuinely new conversation/bounded-work boundary, open with a stable host conversation reference (include a stable boundary reference for a new period in the same conversation). Reuse that exact key on reconnect/retry; never use transport connection IDs, timestamps, random retry IDs, or the latest tenant number. An explicit session_id on open attaches this provider to the same authorized working session; omit it for a distinct session. Closed bindings stay closed. Closing does not close See2It tasks or admit conversation contents. Requires current OAuth and substrate write authority.",
+    annotations: { readOnlyHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        client_id: {
+          type: "string",
+          description: "Authorized tenant identifier",
+          default: "viralbrain",
+        },
+        operation: { type: "string", enum: ["open", "recover", "close"] },
+        conversation_key: {
+          type: "string",
+          minLength: 1,
+          maxLength: 200,
+          description:
+            "Stable host conversation/bounded-work reference, unchanged across retries and reconnects. No conversation contents.",
+        },
+        session_id: {
+          type: "string",
+          description:
+            "Explicit existing session UUID for cross-provider continuation, or expected binding on recover/close. Never a guessed session number.",
+        },
+      },
+      required: ["operation", "conversation_key"],
+      additionalProperties: false,
+    },
+  },
+];
+
 export const ALL_TOOLS_SCHEMA = [
   ...MEMORY_TOOLS_SCHEMA,
   ...RECORD_TOOLS_SCHEMA,
@@ -1336,4 +1428,5 @@ export const ALL_TOOLS_SCHEMA = [
   PERSONAL_WORKFLOW_SCHEMA,
   PERSONAL_COMMITMENT_SCHEMA,
   COMMITMENT_SCHEMA,
+  ...SESSION_TOOLS_SCHEMA,
 ];

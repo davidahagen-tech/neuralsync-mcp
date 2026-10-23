@@ -127,6 +127,7 @@ export interface MemoryContext {
 // still pass this shape). The client translates it to smart-close v2 input
 // at the network boundary.
 export interface SessionWriteback {
+  working_session_id?: string;
   session_number: number;
   client_id: string;
   objective: string;
@@ -389,6 +390,21 @@ export class NeuralSynchClient {
       "Authorization": `Bearer ${accessToken}`,
       "apikey": this.publishableKey,
     };
+  }
+
+  async workingSession(
+    clientId: string,
+    operation: string,
+    conversationKey: string,
+    sessionId: string | undefined,
+    accessToken?: string,
+  ): Promise<unknown> {
+    return await this.rpcCall("ns_working_session_v1", {
+      p_client_id: clientId,
+      p_operation: operation,
+      p_conversation_key: conversationKey,
+      p_session_id: sessionId ?? null,
+    }, accessToken);
   }
 
   // ─── Memory packet read — unchanged from v1 (edge function, service_role internal) ──
@@ -806,6 +822,9 @@ export class NeuralSynchClient {
     const payload = {
       client_id: writeback.client_id,
       session_number: writeback.session_number,
+      ...(writeback.working_session_id
+        ? { working_session_id: writeback.working_session_id }
+        : {}),
       objective: writeback.objective,
       outcome_summary: writeback.outcome_summary,
       decisions_made: normalizedDecisions,
@@ -876,7 +895,8 @@ export class NeuralSynchClient {
     // Canonical connector read admission and storage-population resolution.
     // Direct table RLS/legacy client aliases cannot establish a definitive miss.
     return await this.rpcCall("ns_connector_record_by_id_v1", {
-      p_client_id: clientId, p_record_id: recordId,
+      p_client_id: clientId,
+      p_record_id: recordId,
     }, accessToken);
   }
 
@@ -886,25 +906,54 @@ export class NeuralSynchClient {
     accessToken?: string,
   ): Promise<any> {
     const unknown = (state: string, error: string) => ({
-      state, error, client_id: clientId, timestamp: new Date().toISOString(),
-      locked_decisions: null, memory_records: null, ns_records: null, session_writebacks: null,
+      state,
+      error,
+      client_id: clientId,
+      timestamp: new Date().toISOString(),
+      locked_decisions: null,
+      memory_records: null,
+      ns_records: null,
+      session_writebacks: null,
     });
     try {
-      const res = await fetch(`${this.baseUrl}/rest/v1/rpc/ns_substrate_stats_v1`, {
-        method: "POST",
-        headers: { ...this.userHeaders(accessToken), "Content-Type": "application/json" },
-        body: JSON.stringify({ p_client_id: clientId }),
-      });
-      if (!res.ok) return unknown(res.status === 401 || res.status === 403 ? "access_denied" : "upstream_error", `HTTP ${res.status}`);
+      const res = await fetch(
+        `${this.baseUrl}/rest/v1/rpc/ns_substrate_stats_v1`,
+        {
+          method: "POST",
+          headers: {
+            ...this.userHeaders(accessToken),
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ p_client_id: clientId }),
+        },
+      );
+      if (!res.ok) {
+        return unknown(
+          res.status === 401 || res.status === 403
+            ? "access_denied"
+            : "upstream_error",
+          `HTTP ${res.status}`,
+        );
+      }
       const stats = await res.json();
-      const counts = [stats.ns_records, stats.session_writebacks, stats.locked_decisions];
-      if (!["verified", "no_records"].includes(stats.state) || !counts.every(n => Number.isSafeInteger(n) && n >= 0) ||
-        (stats.state === "no_records") !== counts.every(n => n === 0)) {
+      const counts = [
+        stats.ns_records,
+        stats.session_writebacks,
+        stats.locked_decisions,
+      ];
+      if (
+        !["verified", "no_records"].includes(stats.state) ||
+        !counts.every((n) => Number.isSafeInteger(n) && n >= 0) ||
+        (stats.state === "no_records") !== counts.every((n) => n === 0)
+      ) {
         return unknown("upstream_error", "Invalid statistics response");
       }
       return stats;
     } catch (error) {
-      return unknown(accessToken ? "upstream_error" : "access_denied", accessToken ? "Statistics unavailable" : "Authentication required");
+      return unknown(
+        accessToken ? "upstream_error" : "access_denied",
+        accessToken ? "Statistics unavailable" : "Authentication required",
+      );
     }
   }
 }
