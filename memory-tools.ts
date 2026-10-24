@@ -1,4 +1,5 @@
 import { callCommitment, COMMITMENT_SCHEMA } from "./commitment-tools.ts";
+import { callWorkEpisode, WORK_EPISODE_SCHEMA } from "./work-episode-tools.ts";
 import {
   callPersonalCommitment,
   PERSONAL_COMMITMENT_SCHEMA,
@@ -127,6 +128,8 @@ export class MemoryToolHandler {
   async handleToolCall(tool: MCPToolCall): Promise<MCPToolResult> {
     try {
       switch (tool.name) {
+        case "work_episode":
+          return await callWorkEpisode(tool.arguments);
         case "commitment":
           return await callCommitment(tool.arguments);
         case "personal_commitment":
@@ -1428,5 +1431,6 @@ export const ALL_TOOLS_SCHEMA = [
   PERSONAL_WORKFLOW_SCHEMA,
   PERSONAL_COMMITMENT_SCHEMA,
   COMMITMENT_SCHEMA,
+  WORK_EPISODE_SCHEMA,
   ...SESSION_TOOLS_SCHEMA,
 ];
